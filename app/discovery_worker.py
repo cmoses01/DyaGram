@@ -9,7 +9,7 @@ exit_routers = {
 		"exit_interfaces": ["gig2"]
 	}]
 }
-
+DB_LOCATION = r"C:\Users\chrimos\PycharmProjects\DyaGram\app\db.json"
 
 starting_device = {"device_type": "cisco_ios_telnet",
           "host": "10.10.20.176",
@@ -17,11 +17,10 @@ starting_device = {"device_type": "cisco_ios_telnet",
           "password": dev_pw}
 
 
-discovery = discovery(starting_device, r"C:\Users\chrimos\PycharmProjects\DyaGram\app\db.json")
-
-
-cdp_neighbors = discovery.get_cdp_neighbors()
-print(cdp_neighbors)
+if __name__ == "__main__":
+	discovery = discovery(starting_device, DB_LOCATION)
+	discovery.discover_topology()
+	print(discovery.topology)
 
 
 

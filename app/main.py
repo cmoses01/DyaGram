@@ -1,4 +1,5 @@
 import win32com.client
+from win32com.client import constants
 import logging
 
 logging.basicConfig(filename=r"C:\logs\dyagram_logs\main.log",
@@ -7,10 +8,8 @@ logging.basicConfig(filename=r"C:\logs\dyagram_logs\main.log",
 logger = logging.getLogger()
 logger.level = 10
 
-from win32com.client import constants
+def create_visio_diagram():
 
-
-def main():
     logger.debug("Creating Visio Diagram...")
     appVisio = win32com.client.Dispatch("Visio.InvisibleApp")
     # appVisio = win32com.client.Dispatch("Visio.Application")
@@ -60,7 +59,3 @@ def main():
     logger.debug("Quitting Visio..")
     appVisio.Quit()
     logger.debug("Visio closed")
-
-
-if __name__ == "__main__":
-    main()

@@ -1,0 +1,20 @@
+{
+	"routers": [{
+		"hostname": "",
+		"neighbors": [{
+			"hostname": "",
+			"local_port": "",
+			"remote_port": "",
+			"mgmt_ip_address": ""
+		}]
+	}],
+	"switches": [{
+		"hostname": "",
+		"neighbors": [{
+			"hostname": "",
+			"local_port": "",
+			"remote_port": "",
+			"mgmt_ip_address": ""
+		}]
+	}]
+}

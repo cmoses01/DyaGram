@@ -1,4 +1,4 @@
-from modules.discovery import discovery
+from modules.dyagram import dyagram
 
 
 dev_user = "cisco"
@@ -18,9 +18,9 @@ starting_device = {"device_type": "cisco_ios_telnet",
 
 
 if __name__ == "__main__":
-	discovery = discovery(starting_device, DB_LOCATION)
-	discovery.discover_topology()
-	print(discovery.topology)
+	dyagram = dyagram(starting_device, DB_LOCATION)
+	dyagram.discover_topology()
+	print(dyagram.topology)
 
 
 

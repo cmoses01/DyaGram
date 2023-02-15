@@ -16,11 +16,11 @@ starting_device = {"device_type": "cisco_ios_telnet",
           "username": dev_user,
           "password": dev_pw}
 
+# main code
 
-if __name__ == "__main__":
-	dyagram = dyagram(starting_device, DB_LOCATION)
-	dyagram.discover_topology()
-	print(dyagram.topology)
+dyagram = dyagram(starting_device, DB_LOCATION)
+dyagram.discover()
+print(dyagram.topology)
 
 
 

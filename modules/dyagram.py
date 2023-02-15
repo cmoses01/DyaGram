@@ -42,7 +42,7 @@ class dyagram:
 
 
 
-    def discover_topology(self):
+    def discover(self):
         '''
 
         Generates topology via cdp/lldp neighbors into a json object assigned to topology attribute

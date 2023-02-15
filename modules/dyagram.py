@@ -8,7 +8,6 @@ class dyagram:
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-
     def __init__(self, netmiko_args_starting_device, database):
 
         self.netmiko_args = netmiko_args_starting_device
@@ -21,14 +20,25 @@ class dyagram:
         self._devices_queried = []
         self._devices_to_query = []
 
+        self._load_device_info()
+
+    def _load_device_info(self):
+
         self._get_hostname()
         self._get_version()
         self._get_serial_number()
-
-
         self.device_type = "switch" if self.current_version in ['nx_os', 'ios_xe'] else "router"
 
+
+    def _reset_device_info(self):
+
+        self.session = None
+        self.current_version = None
+        self.current_hostname = None
+        self.current_serial_number = None
     site_devices = []
+
+
 
     def discover_topology(self):
         '''
@@ -52,18 +62,23 @@ class dyagram:
                 self.session.disconnect()
             except:
                 pass
+            self._reset_device_info()
             self.netmiko_args['host'] = device['mgmt_ip_address']
             self.session = self._create_netmiko_session()
+            self._load_device_info()
+    
             cdp_nei_json = self.get_cdp_neighbors()
             self.topology["devices"].append(cdp_nei_json)
             for neighbor in cdp_nei_json_starting_device['neighbors']:
                 if neighbor not in self._devices_to_query and self._devices_queried:
                     self._devices_to_query.append(neighbor)
-            self._devices_to_query.pop(device)
+            self._devices_to_query.remove(device)
             self._devices_queried.append(device)
 
 
+
     def _create_netmiko_session(self):
+
         return ConnectHandler(**self.netmiko_args)
     def _get_serial_number(self):
         show_ver = self.session.send_command("show ver | inc board ID")

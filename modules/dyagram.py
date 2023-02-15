@@ -15,7 +15,9 @@ class dyagram:
         self.database = database
         self.current_version = None
         self.current_hostname = None
+        self.current_device_type = None
         self.current_serial_number = None
+
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self._devices_queried = []
         self._devices_to_query = []
@@ -27,7 +29,7 @@ class dyagram:
         self._get_hostname()
         self._get_version()
         self._get_serial_number()
-        self.device_type = "switch" if self.current_version in ['nx_os', 'ios_xe'] else "router"
+        self.current_device_type = "switch" if self.current_version in ['nx_os', 'ios_xe'] else "router"
 
 
     def _reset_device_info(self):
@@ -66,7 +68,7 @@ class dyagram:
             self.netmiko_args['host'] = device['mgmt_ip_address']
             self.session = self._create_netmiko_session()
             self._load_device_info()
-    
+
             cdp_nei_json = self.get_cdp_neighbors()
             self.topology["devices"].append(cdp_nei_json)
             for neighbor in cdp_nei_json_starting_device['neighbors']:

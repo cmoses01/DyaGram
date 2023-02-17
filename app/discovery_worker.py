@@ -11,7 +11,7 @@ exit_routers = {
 }
 DB_LOCATION = r"C:\Users\chrimos\PycharmProjects\DyaGram\app\db.json"
 
-starting_device = {"device_type": "cisco_ios_telnet",
+starting_device = {"device_type": "cisco_ios",
           "host": "10.10.20.176",
           "username": dev_user,
           "password": dev_pw}

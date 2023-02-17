@@ -1,8 +1,7 @@
 import re
 import time
-
-from netmiko import ConnectHandler
 import os
+from netmiko import ConnectHandler
 
 class dyagram:
 
@@ -32,7 +31,6 @@ class dyagram:
         self._get_serial_number()
         self.current_device_type = "switch" if self.current_version in ['nx_os', 'ios_xe'] else "router"
 
-
     def _reset_device_info(self):
 
         self.session.disconnect()
@@ -40,8 +38,6 @@ class dyagram:
         self.current_version = None
         self.current_hostname = None
         self.current_serial_number = None
-
-
 
     def discover(self):
         '''
@@ -57,16 +53,14 @@ class dyagram:
         for neighbor in cdp_nei_json_starting_device['neighbors']:
             if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
                 self._devices_to_query.append(neighbor)
-                print(f"Added neighbor to devices to query: \n{neighbor}")
         self.session.disconnect()
-
 
         for device in self._devices_to_query:
 
             try:
                 self.session.disconnect()
             except:
-                print("except")
+                pass
             self._reset_device_info()
             self.netmiko_args['host'] = device['mgmt_ip_address']
             self.session = self._create_netmiko_session()
@@ -79,16 +73,13 @@ class dyagram:
                     self._devices_to_query.append(neighbor)
             #self._devices_to_query.remove(device) # this was causing loop issue
             self._devices_queried.append(device)
-        print(f"ENDING DEVICES TO QUERY: {self._devices_to_query}")
-
 
     def _create_netmiko_session(self):
-
         return ConnectHandler(**self.netmiko_args)
+
     def _get_serial_number(self):
         show_ver = self.session.send_command("show ver")
         self.current_serial_number = re.search("board id\s+(.*)", show_ver.lower()).group(1)
-
 
     def get_cdp_neighbors(self):
 
@@ -100,16 +91,10 @@ class dyagram:
         cdp_neighbors_output = self.session.send_command("show cdp neighbors det")
         return self._regex_cdp_neighbors(cdp_neighbors_output)
 
-
-
-
     def _regex_cdp_neighbors(self, cdp_neighbors):
 
         cdp_info_json = {"hostname": self.current_hostname, "serial_number": self.current_serial_number, "neighbors": []}
-
         regex = self._get_cdp_neighbor_regex_strings()
-
-
         device_ids = []
 
         for r in regex['device_id']:
@@ -199,8 +184,6 @@ class dyagram:
         else:
             self.current_version = None
 
-
-
     def _get_cdp_neighbor_regex_strings(self):
 
         regex = {"ios_xe": #{"device_id": [r"Device\s+ID:(.*)\(.*\)"],
@@ -218,4 +201,3 @@ class dyagram:
                            "mgmt_ip_address": r"Mgmt address.*:\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"}}
 
         return regex[self.current_version]
-

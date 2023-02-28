@@ -2,27 +2,68 @@ import re
 import time
 import os
 from netmiko import ConnectHandler
+import requests
+import yaml
+
 
 class dyagram:
 
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-    def __init__(self, netmiko_args_starting_device, database):
+    def __init__(self, init_file_location, database):
 
-        self.netmiko_args = netmiko_args_starting_device
-        self.session = self._create_netmiko_session()
+        self.current_device_is_starting_device = True
+
+        self.init_file_location = init_file_location
         self.database = database
+        self.starting_device = None
         self.current_version = None
         self.current_hostname = None
         self.current_device_type = None
         self.current_serial_number = None
 
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
+
+        self.username = None
+        self.password = None
+        self.ip = None
+
+        self.restconf_url = f'https://{self.ip}/restconf/data'
+        self.restconf_headers = {
+            'Accept': 'application/yang-data+json',
+            'Content-Type': 'application/yang-data+json'
+        }
+        self.device_brand = None
+        self.device_os = None
         self._devices_queried = []
         self._devices_to_query = []
 
+        self._load_creds()
+        self._load_init_file()
+
+        self.netmiko_args_starting_device = {"device_type": "cisco_ios",
+                                             "host": self.starting_device,
+                                             "username": self.username,
+                                             "password": self.password}
+        self.netmiko_args = {"device_type": "cisco_ios",
+                             "host": self.ip,
+                             "username": self.username,
+                             "password": self.password}
+        #self.netmiko_args = None
+        self.session = self._create_netmiko_session()
         self._load_device_info()
+
+    def _load_creds(self):
+        #first try OS ENV
+        self.username = os.environ['DYAGRAM_USERNAME']
+        self.password = os.environ['DYAGRAM_PASSWORD']
+
+
+    def _load_init_file(self):
+        with open(self.init_file_location, 'r') as file:
+            init = yaml.safe_load(file)
+            self.starting_device = init['starting_device']['ip']
 
     def _load_device_info(self):
 
@@ -48,58 +89,160 @@ class dyagram:
         '''
 
         # START WITH STARTING DEVICE
-        cdp_nei_json_starting_device = self.get_cdp_neighbors()
-        self.topology["devices"].append(cdp_nei_json_starting_device)
-        for neighbor in cdp_nei_json_starting_device['neighbors']:
-            if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-                self._devices_to_query.append(neighbor)
-        self.session.disconnect()
+        #self._discover_neighbors_by_restconf()
+        self._discover_neighbors_by_ssh()
 
-        for device in self._devices_to_query:
+        self.current_device_is_starting_device = False
 
-            try:
-                self.session.disconnect()
-            except:
-                pass
+        #next will start to crawl through neighbors
+        for self.device in self._devices_to_query:
+
+            #self._discover_neighbors_by_restconf()
+            self._discover_neighbors_by_ssh()
+
+
+
+    def _discover_neighbors_by_restconf(self):
+        pass
+
+
+    def _discover_neighbors_by_ssh(self):
+        try:
+            self.session.disconnect()
+        except:
+            pass
+
+
+        if not self.current_device_is_starting_device:
             self._reset_device_info()
-            self.netmiko_args['host'] = device['mgmt_ip_address']
+            if self.device['mgmt_ip_address']:
+                self.netmiko_args['host'] = self.device['mgmt_ip_address']
+            elif self.device['ip_address']:
+                self.netmiko_args['host'] = self.device['ip_address']
+            else:
+                raise Exception(f"IP Address not found:\n {self.device}")
             self.session = self._create_netmiko_session()
             self._load_device_info()
 
-            cdp_nei_json = self.get_cdp_neighbors()
-            self.topology["devices"].append(cdp_nei_json)
-            for neighbor in cdp_nei_json_starting_device['neighbors']:
-                if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-                    self._devices_to_query.append(neighbor)
-            #self._devices_to_query.remove(device) # this was causing loop issue
-            self._devices_queried.append(device)
+        else:
+            self.netmiko_args['host'] = self.netmiko_args_starting_device['host']
+
+        cdp_nei_json = self._get_cdp_neighbors_regex()
+        self.topology["devices"].append(cdp_nei_json)
+
+        for neighbor in cdp_nei_json['neighbors']:
+            if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
+                self._devices_to_query.append(neighbor)
+        self.session.disconnect()
+        self._devices_queried.append(self.device)
+
+
+
+    # def _discover_by_cdp(self):
+    #
+    #     # try:
+    #     #     #discover by RESTCONF
+    #     #     pass
+    #     # except:
+    #     #     pass
+    #     #
+    #     #
+    #     # try:
+    #     #     cdp_nei_json_starting_device = self._get_cdp_neighbors_regex()
+    #     # except:
+    #     #     #try open config
+    #     #     pass
+    #     #
+    #     #
+    #     #
+    #     # self.topology["devices"].append(cdp_nei_json_starting_device)
+    #     # for neighbor in cdp_nei_json_starting_device['neighbors']:
+    #     #     if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
+    #     #         self._devices_to_query.append(neighbor)
+    #     # self.session.disconnect()
+    #
+    #     # for device in self._devices_to_query:
+    #     #
+    #     #     try:
+    #     #         self.session.disconnect()
+    #     #     except:
+    #     #         pass
+    #     #     self._reset_device_info()
+    #     #     self.netmiko_args['host'] = device['mgmt_ip_address']
+    #     #     self.session = self._create_netmiko_session()
+    #     #     self._load_device_info()
+    #
+    #         cdp_nei_json = self._get_cdp_neighbors_regex()
+    #         self.topology["devices"].append(cdp_nei_json)
+    #         for neighbor in cdp_nei_json_starting_device['neighbors']:
+    #             if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
+    #                 self._devices_to_query.append(neighbor)
+    #         # self._devices_to_query.remove(device) # this was causing loop issue
+    #
 
     def _create_netmiko_session(self):
+        if self.current_device_is_starting_device:
+            return ConnectHandler(**self.netmiko_args_starting_device)
+
         return ConnectHandler(**self.netmiko_args)
 
     def _get_serial_number(self):
         show_ver = self.session.send_command("show ver")
         self.current_serial_number = re.search("board id\s+(.*)", show_ver.lower()).group(1)
 
-    def get_cdp_neighbors(self):
+    # def get_neighbors(self):
+    #
+    #     '''
+    #     returns JSON formatted cdp/lldp neighbor data
+    #     :return:
+    #     '''
+    #
+    #
+    #     return self._get_cdp_neighbors_regex()
 
-        '''
-        returns JSON formatted cdp neighbor data
+    def get_restconf_netconf_capabilities(self):
+        return requests.get(f"{self.restconf_url}/netconf-state/capabilities", headers=self.restconf_headers, verify=False)
+
+    def _get_lldp_neighbors_restconf(self):
+
+        """
+        Attempts to get lldp neighbor info via various YANG Data models starting with OpenConfig then moving to device
+        specific (native)
+
+        returns lldp neighbor info in
         :return:
-        '''
+        """
+
+        #first try OpenConfig YANG
+        oc_yang_resp = requests.get(f"{self.restconf_url}/openconfig-lldp:lldp/interfaces/interface/",
+                                    headers=self.restconf_headers, verify=False)
+        if oc_yang_resp.status_code == 200:
+            return oc_yang_resp.json()
+
+        #try Cisco-NX-OS-device YANG
+        cisco_nx_os_device_yang_resp = requests.get(f"{self.restconf_url}/Cisco-NX-OS-device:System/lldp-items/inst-items/",
+                                                    headers={"Accept": "application/yang.data+json", "Content-Type": "application/yang.data+json"}
+                                                    , verify=False)
+
+        if cisco_nx_os_device_yang_resp.status_code == 200:
+            return cisco_nx_os_device_yang_resp.json()
+
+
+
+    def _get_cdp_neighbors_regex(self):
+        print(self.session.username)
+        print(self.session.password)
+        print(self.session.host)
+        print(self.session.device_type)
 
         cdp_neighbors_output = self.session.send_command("show cdp neighbors det")
-        return self._regex_cdp_neighbors(cdp_neighbors_output)
-
-    def _regex_cdp_neighbors(self, cdp_neighbors):
-
         cdp_info_json = {"hostname": self.current_hostname, "serial_number": self.current_serial_number, "neighbors": []}
-        regex = self._get_cdp_neighbor_regex_strings()
+        regex_strs = self._get_cdp_neighbor_regex_strings()
         device_ids = []
 
-        for r in regex['device_id']:
+        for r in regex_strs['device_id']:
             print(r)
-            ids = re.findall(r, cdp_neighbors)
+            ids = re.findall(r, cdp_neighbors_output)
             print(f"IDS: {ids}")
             for i in ids:
                 print(i)
@@ -118,16 +261,16 @@ class dyagram:
 
         device_ids = [x.strip(' ') for x in device_ids]
 
-        ip_addresses = re.findall(regex['ip_address'], cdp_neighbors)
+        ip_addresses = re.findall(regex_strs['ip_address'], cdp_neighbors_output)
         ip_addresses = [x.strip(' ') for x in ip_addresses]
 
-        local_interfaces = re.findall(regex['local_interface'], cdp_neighbors)
+        local_interfaces = re.findall(regex_strs['local_interface'], cdp_neighbors_output)
         local_interfaces = [x.strip(' ') for x in local_interfaces]
 
-        neighbor_interfaces = re.findall(regex['neighbor_interface'], cdp_neighbors)
+        neighbor_interfaces = re.findall(regex_strs['neighbor_interface'], cdp_neighbors_output)
         neighbor_interfaces = [x.strip(' ') for x in neighbor_interfaces]
 
-        mgmt_ip_addresses = re.findall(regex['mgmt_ip_address'], cdp_neighbors)
+        mgmt_ip_addresses = re.findall(regex_strs['mgmt_ip_address'], cdp_neighbors_output)
         if len(mgmt_ip_addresses) > 0:
             mgmt_ip_addresses = [x.strip(' ') for x in mgmt_ip_addresses]
 

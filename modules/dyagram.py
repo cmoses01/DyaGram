@@ -38,6 +38,7 @@ class dyagram:
         self.device_os = None
         self._devices_queried = []
         self._devices_to_query = []
+        self._current_device = None
 
         self._load_creds()
         self._load_init_file()
@@ -95,8 +96,8 @@ class dyagram:
         self.current_device_is_starting_device = False
 
         #next will start to crawl through neighbors
-        for self.device in self._devices_to_query:
-
+        for device in self._devices_to_query:
+            self._current_device = device
             #self._discover_neighbors_by_restconf()
             self._discover_neighbors_by_ssh()
 
@@ -107,20 +108,24 @@ class dyagram:
 
 
     def _discover_neighbors_by_ssh(self):
-        try:
-            self.session.disconnect()
-        except:
-            pass
-
 
         if not self.current_device_is_starting_device:
+
+            try:
+                self.session.disconnect()
+            except:
+                pass
+
             self._reset_device_info()
-            if self.device['mgmt_ip_address']:
-                self.netmiko_args['host'] = self.device['mgmt_ip_address']
-            elif self.device['ip_address']:
-                self.netmiko_args['host'] = self.device['ip_address']
+
+            if self._current_device['mgmt_ip_address']:
+                print(f"CURRENT MGMT IP ADDRESS: {self._current_device['mgmt_ip_address']}")
+                self.netmiko_args['host'] = self._current_device['mgmt_ip_address']
+            elif self._current_device['ip_address']:
+                print(f"CURRENT NON-MGMT IP ADDRESS: {self._current_device['ip_address']}")
+                self.netmiko_args['host'] = self._current_device['ip_address']
             else:
-                raise Exception(f"IP Address not found:\n {self.device}")
+                raise Exception(f"IP Address not found:\n {self._current_device}")
             self.session = self._create_netmiko_session()
             self._load_device_info()
 
@@ -134,7 +139,7 @@ class dyagram:
             if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
                 self._devices_to_query.append(neighbor)
         self.session.disconnect()
-        self._devices_queried.append(self.device)
+        self._devices_queried.append(self._current_device)
 
 
 

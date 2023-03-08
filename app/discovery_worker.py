@@ -16,12 +16,14 @@ starting_device = {"device_type": "cisco_ios",
           "username": dev_user,
           "password": dev_pw}
 
-init_file = r"C:\Users\chrimos\PycharmProjects\DyaGram\init.yml"
+init_file = r"C:\Users\chrimos\PycharmProjects\DyaGram\app\inventory.yml"
 
 # main code
 
 dyagram = dyagram(init_file,DB_LOCATION)
 dyagram.discover()
+
+
 
 print(dyagram.topology)
 

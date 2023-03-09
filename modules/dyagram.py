@@ -11,13 +11,12 @@ class dyagram:
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-    def __init__(self, inventory_file, database):
+    def __init__(self, inventory_file):
 
         #self.current_device_is_starting_device = True
 
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
-        self.database = database
         #starting_device = None
         # self.current_version = None
         # self.current_hostname = None
@@ -95,6 +94,14 @@ class dyagram:
             #self._discover_neighbors_by_restconf()
             self._discover_neighbors_by_ssh(device)
             self._devices_queried.append(device)
+
+        self.export_state()
+
+    def export_state(self):
+
+        file = open(r"C:\Users\chrimos\PycharmProjects\DyaGram\app\state.yml", 'w')
+        yaml.safe_dump(self.topology, file, sort_keys=False)
+        file.close()
 
     def get_inv_yaml_obj(self):
 
@@ -420,3 +427,4 @@ class dyagram:
     #                        "mgmt_ip_address": r"Mgmt address.*:\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"}}
     #
     #     return regex[os]
+

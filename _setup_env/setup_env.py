@@ -8,20 +8,20 @@ netmiko_args = {
     "password": "cisco"
 }
 
-routers = ['10.10.20.176']
+routers = ['10.10.20.174']
 
 nxos_switches = ['10.10.20.177', "10.10.20.178"]
 
-for r in routers:
-    netmiko_args['host'] = r
-    dev = ConnectHandler(**netmiko_args)
-    dev.send_config_set("lldp run")
-    dev.send_config_set("cdp run")
-    dev.send_config_set("restconf")
-    dev.send_config_set(['interface range gi4-5', "cdp enable"])
-    dev.send_config_set(['interface range gi4-5', "lldp enable"])
-
-    dev.disconnect()
+# for r in routers:
+#     netmiko_args['host'] = r
+#     dev = ConnectHandler(**netmiko_args)
+#     dev.send_config_set("lldp run")
+#     dev.send_config_set("cdp run")
+#     dev.send_config_set("restconf")
+#     dev.send_config_set(['interface range gi4-5', "cdp enable"])
+#     dev.send_config_set(['interface range gi4-5', "lldp enable"])
+#
+#     dev.disconnect()
 
 for s in nxos_switches:
     netmiko_args['host'] = s
@@ -30,3 +30,4 @@ for s in nxos_switches:
     dev.send_config_set("feature restconf")
     dev.send_config_set("feature nxapi")
 
+# 5254.000a.4303

@@ -151,15 +151,15 @@ class dyagram:
         # else:
         #     self.netmiko_args['host'] = self.netmiko_args_starting_device['host']
 
-        cdp_nei_json = self._get_cdp_neighbors_regex(dev)
+        cdp_nei_json = self._get_lldp_neighbors_regex(dev)
         self.topology["devices"].append(cdp_nei_json)
 
-        for neighbor in cdp_nei_json['neighbors']:
-            print(f"NEIGHBOR: {neighbor}")
-            if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-                self._devices_to_query.append(neighbor)
+        # for neighbor in cdp_nei_json['neighbors']:
+        #     print(f"NEIGHBOR: {neighbor}")
+        #     if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
+        #         self._devices_to_query.append(neighbor)
         dev.disconnect()
-        self._devices_queried.append(self._current_device)
+        self._devices_queried.append(device)
 
 
 
@@ -211,6 +211,19 @@ class dyagram:
 
         return ConnectHandler(**self.netmiko_args)
 
+
+    def _get_chassis_ids_by_ssh(self, netmiko_session, os):
+
+        if os in ["nxos", "ios_xe"]:
+            output = netmiko_session.send_command("sh interface | inc bia: ")
+            return re.findall(
+                '(?<=bia\s)[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]',
+                output)
+        elif os == "ios_xr":
+            output = netmiko_session.send_command("show lldp")
+            return [re.search("(?<=Chassis ID:\s).*", output).group(0)]
+
+
     def _get_serial_number(self, netmiko_session):
         show_ver = netmiko_session.send_command("show ver")
         return re.search("board id\s+(.*)", show_ver.lower()).group(1)
@@ -252,9 +265,17 @@ class dyagram:
         if cisco_nx_os_device_yang_resp.status_code == 200:
             return cisco_nx_os_device_yang_resp.json()
 
+    # def _get_lldp_neighbors_regex(self, netmiko_session):
+    #
+    #     os = self._get_os_version(netmiko_session)
+    #     lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
+    #     cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
+    #                      "chassis_id": self._get_chassis_ids_by_ssh(netmiko_session, os),
+    #                      "neighbors": []}
+    #
+    #     return cdp_info_json
 
-
-    def _get_cdp_neighbors_regex(self, netmiko_session):
+    def _get_lldp_neighbors_regex(self, netmiko_session):
         # print(self.ssh_session.username)
         # print(self.ssh_session.password)
         # print(self.ssh_session.host)
@@ -262,69 +283,58 @@ class dyagram:
 
 
         os = self._get_os_version(netmiko_session)
-        cdp_neighbors_output = netmiko_session.send_command("show cdp neighbors det")
+        print(f"OS: {os}")
+        lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
         cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
-                         "serial_number": self._get_serial_number(netmiko_session),
+                         "chassis_ids": self._get_chassis_ids_by_ssh(netmiko_session, os),
                          "neighbors": []}
 
-        regex_strs = self._get_cdp_neighbor_regex_strings(os)
-        device_ids = []
-
-        for r in regex_strs['device_id']:
-            print(r)
-            ids = re.findall(r, cdp_neighbors_output)
-            print(f"IDS: {ids}")
-            for i in ids:
-                print(i)
-                try:
-                    regexed_again_neighbor = re.match("Device\s+ID:(.*)\(.*\)", i)
-                    device_ids.append(regexed_again_neighbor.group(1))
-                except:
-                    try:
-                        regexed_again_neighbor = re.match("Device\s+ID:([^\.]*)", i)
-                        device_ids.append(regexed_again_neighbor.group(1))
-                    except:
-                        continue
-
-        print(f"DEVICE IDS: {device_ids}")
+        regex_strs = self._get_lldp_neighbor_regex_strings(os)
 
 
-        device_ids = [x.strip(' ') for x in device_ids]
+        system_names = re.findall(regex_strs['system_name'], lldp_neighbors_output, re.MULTILINE)
 
-        ip_addresses = re.findall(regex_strs['ip_address'], cdp_neighbors_output)
-        ip_addresses = [x.strip(' ') for x in ip_addresses]
+        print(f"SYSTEM NAMES: {system_names}")
 
-        local_interfaces = re.findall(regex_strs['local_interface'], cdp_neighbors_output)
+
+        system_names = [x.strip(' ') for x in system_names]
+
+        # ip_addresses = re.findall(regex_strs['ip_address'], lldp_neighbors_output)
+        # ip_addresses = [x.strip(' ') for x in ip_addresses]
+
+        local_interfaces = re.findall(regex_strs['local_interface'], lldp_neighbors_output)
         local_interfaces = [x.strip(' ') for x in local_interfaces]
 
-        neighbor_interfaces = re.findall(regex_strs['neighbor_interface'], cdp_neighbors_output)
+        neighbor_interfaces = re.findall(regex_strs['neighbor_interface'], lldp_neighbors_output, re.MULTILINE)
         neighbor_interfaces = [x.strip(' ') for x in neighbor_interfaces]
 
-        mgmt_ip_addresses = re.findall(regex_strs['mgmt_ip_address'], cdp_neighbors_output)
-        if len(mgmt_ip_addresses) > 0:
-            mgmt_ip_addresses = [x.strip(' ') for x in mgmt_ip_addresses]
+        chassis_ids = re.findall(regex_strs['chassis_id'], lldp_neighbors_output, re.MULTILINE)
+        chassis_ids = [x.strip(' ') for x in chassis_ids]
+
+        # mgmt_ip_addresses = re.findall(regex_strs['mgmt_ip_address'], lldp_neighbors_output)
+        # if len(mgmt_ip_addresses) > 0:
+        #     mgmt_ip_addresses = [x.strip(' ') for x in mgmt_ip_addresses]
 
         neighbor_info_template = {
 			"hostname": "",
 			"local_port": "",
 			"neighbor_port": "",
-            "ip_address": "",
-			"mgmt_ip_address": ""
+            "chassis_id": ""
 		}
 
         counter = 0
-        for i in device_ids:
+        for i in system_names:
             neighbor_info = neighbor_info_template.copy()
             cdp_info_json['neighbors'].append(neighbor_info)
             cdp_info_json['neighbors'][counter]['hostname'] = i
             counter += 1
 
-        counter = 0
-        print(ip_addresses)
-        print(cdp_info_json['neighbors'])
-        for i in ip_addresses:
-            cdp_info_json['neighbors'][counter]["ip_address"] = i
-            counter += 1
+        # counter = 0
+
+        # print(cdp_info_json['neighbors'])
+        # for i in ip_addresses:
+        #     cdp_info_json['neighbors'][counter]["ip_address"] = i
+        #     counter += 1
 
         counter = 0
         for i in local_interfaces:
@@ -332,14 +342,20 @@ class dyagram:
             counter += 1
 
         counter = 0
+        print(neighbor_interfaces)
         for i in neighbor_interfaces:
             cdp_info_json['neighbors'][counter]["neighbor_port"] = i
             counter += 1
 
         counter = 0
-        for i in mgmt_ip_addresses:
-            cdp_info_json['neighbors'][counter]["mgmt_ip_address"] = i
+        for i in chassis_ids:
+            cdp_info_json['neighbors'][counter]['chassis_id'] = i
             counter += 1
+
+        # counter = 0
+        # for i in mgmt_ip_addresses:
+        #     cdp_info_json['neighbors'][counter]["mgmt_ip_address"] = i
+        #     counter += 1
 
         return cdp_info_json
 
@@ -356,23 +372,51 @@ class dyagram:
             return "ios_xe"
         elif "NX-OS" in sh_version_output:
             return "nx_os"
+        elif "IOS XR" in sh_version_output:
+            return "ios_xr"
 
         return None
 
-    def _get_cdp_neighbor_regex_strings(self, os):
 
-        regex = {"ios_xe": #{"device_id": [r"Device\s+ID:(.*)\(.*\)"],
-                            {"device_id": [r"Device\s+ID:.*"],
-                           "ip_address": r"Entry address.*\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)",
-                           "local_interface": r"Interface:\s+(.*),",
-                           "neighbor_interface": r"Port ID.*:\s+(.*)",
-                           "mgmt_ip_address": r"Management address.*:\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"},
+    def _get_lldp_neighbor_regex_strings(self, os):
 
-                 "nx_os": #{"device_id": [r"Device\s+ID:(.*)\(.*\)", r"Device\s+ID:([^\.]*)"],
-                           {"device_id": [r"Device\s+ID:.*"],
-                           "ip_address": r"Interface address.*\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)",
-                           "local_interface": r"Interface:\s+(.*),",
-                           "neighbor_interface": r"Port ID.*:\s+(.*)",
-                           "mgmt_ip_address": r"Mgmt address.*:\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"}}
+        regex = {"ios_xe":
+                     {"system_name": r"(?<=System Name:\s).*",
+                      "local_interface": r"(?<=Local Intf:\s).*",
+                      "neighbor_interface": r"(?<=Port id:\s).*",
+                      "chassis_id": r"(?<=^Chassis id:\s).*"},
+
+                 "nx_os":
+                     {"system_name": r"(?<=System Name:\s).*",
+                      "local_interface": r"(?<=Local Port id:\s).*",
+                      "neighbor_interface": r"(?<=^Port id:\s).*",
+                      "chassis_id": r"(?<=^Chassis id:\s).*"
+
+                      },
+                 "ios_xr":
+                     {"system_name": r"(?<=System Name:\s).*",
+                      "local_interface": r"(?<=Local Interface:\s).*",
+                      "neighbor_interface": r"(?<=^Port id:\s).*",
+                      "chassis_id": r"(?<=^Chassis id:\s).*"
+                      }
+                 }
 
         return regex[os]
+
+
+    # def _get_cdp_neighbor_regex_strings(self, os):
+    #
+    #     regex = {"ios_xe": #{"device_id": [r"Device\s+ID:(.*)\(.*\)"],
+    #                         {"system_name": [r"(?<=System Name:\s).*"],
+    #                        "local_interface": r"(?<=Local Intf:\s).*",
+    #                        "neighbor_interface": r"(?<=Port id:\s).*",
+    #                        ,
+    #
+    #              "nx_os": #{"device_id": [r"Device\s+ID:(.*)\(.*\)", r"Device\s+ID:([^\.]*)"],
+    #                        {"device_id": [r"Device\s+ID:.*"],
+    #                        "ip_address": r"Interface address.*\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)",
+    #                        "local_interface": r"Interface:\s+(.*),",
+    #                        "neighbor_interface": r"Port ID.*:\s+(.*)",
+    #                        "mgmt_ip_address": r"Mgmt address.*:\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"}}
+    #
+    #     return regex[os]

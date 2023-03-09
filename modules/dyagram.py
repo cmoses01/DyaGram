@@ -1,3 +1,4 @@
+import json
 import re
 import time
 import os
@@ -11,10 +12,10 @@ class dyagram:
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-    def __init__(self, inventory_file):
+    def __init__(self, inventory_file, initial=False):
 
         #self.current_device_is_starting_device = True
-
+        self.initial = initial
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
         #starting_device = None
@@ -95,12 +96,29 @@ class dyagram:
             self._discover_neighbors_by_ssh(device)
             self._devices_queried.append(device)
 
-        self.export_state()
+        if self.initial:
+            self.export_state()
+        else:
+            self.compare_states()
+
 
     def export_state(self):
 
-        file = open(r"C:\Users\chrimos\PycharmProjects\DyaGram\app\state.yml", 'w')
-        yaml.safe_dump(self.topology, file, sort_keys=False)
+        file = open(r"C:\Users\chrimos\PycharmProjects\DyaGram\app\state.json", 'w')
+        json.dump(self.topology, file)
+        file.close()
+
+    def compare_states(self):
+        file = open(r"C:\Users\chrimos\PycharmProjects\DyaGram\app\state.json", 'r')
+        state = json.load(file)
+        current_state = self.topology
+
+        if state == current_state:
+            print("\n\n\n\n\nNO CHANGES IN STATE")
+        else:
+            print("\n\n\n\nCHANGES IN STATE!!")
+        print(f"\n\n\nSTATE FILE:\n{state}")
+        print(f"\n\n\nCURRENT STATE:\n{current_state}")
         file.close()
 
     def get_inv_yaml_obj(self):
@@ -223,9 +241,17 @@ class dyagram:
 
         if os in ["nx_os", "ios_xe"]:
             output = netmiko_session.send_command("sh interface | inc bia ")
-            return re.findall(
+            re_resp = re.findall(
                 '(?<=bia\s)[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]',
                 output)
+
+            # PC'S CARRY OVER ETHERNET MAC, SO THIS WOULD CHANGE IF PORT FAILED OVER TO OTHER MEMBERS AND THIS FIXES
+            #THAT BY REMOVING DUPLICATES
+
+            chassis_ids = []
+            [chassis_ids.append(i) for i in re_resp if i not in chassis_ids]
+            return chassis_ids
+
         elif os == "ios_xr":
             output = netmiko_session.send_command("show lldp")
             return [re.search("(?<=Chassis ID:\s).*", output).group(0)]

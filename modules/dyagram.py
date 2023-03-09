@@ -214,8 +214,8 @@ class dyagram:
 
     def _get_chassis_ids_by_ssh(self, netmiko_session, os):
 
-        if os in ["nxos", "ios_xe"]:
-            output = netmiko_session.send_command("sh interface | inc bia: ")
+        if os in ["nx_os", "ios_xe"]:
+            output = netmiko_session.send_command("sh interface | inc bia ")
             return re.findall(
                 '(?<=bia\s)[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]',
                 output)

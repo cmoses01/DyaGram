@@ -1,4 +1,5 @@
 import json
+import queue
 import re
 import time
 import os
@@ -8,7 +9,8 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
-#before multithread
+
+#during multithread
 
 class dyagram:
 
@@ -20,9 +22,9 @@ class dyagram:
         self.initial = initial
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
-        #self._devices_to_query = Queue()
+        self._devices_to_query = Queue()
         self._devices_queried = []
-        self._devices_to_query = []
+        #self._devices_to_query = []
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self.username = None
         self.password = None
@@ -49,10 +51,18 @@ class dyagram:
         :return:
         '''
 
-        for device in self._devices_to_query:
-            #self._discover_neighbors_by_restconf()
-            self._discover_neighbors_by_ssh(device)
-            self._devices_queried.append(device)
+        executor = ThreadPoolExecutor(max_workers=10)
+
+        queue_empty = False
+        while not queue_empty:
+            try:
+               device =  self._devices_to_query.get_nowait()
+               executor.submit(self._discover_neighbors_by_ssh,device)
+               self._devices_queried.append(device)
+            except queue.Empty:
+                queue_empty = True
+
+        executor.shutdown(wait=True)
 
         if self.initial:
             self.export_state()
@@ -96,7 +106,7 @@ class dyagram:
 
         for site in self.inventory_object.keys():
             for ip in self.inventory_object[site]:
-                self._devices_to_query.append(ip)
+                self._devices_to_query.put(ip)
 
 
     def _discover_neighbors_by_restconf(self):

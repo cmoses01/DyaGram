@@ -8,7 +8,7 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
-
+#before multithread
 
 class dyagram:
 

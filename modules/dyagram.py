@@ -5,6 +5,9 @@ import os
 from netmiko import ConnectHandler
 import requests
 import yaml
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+
 
 
 class dyagram:
@@ -12,75 +15,30 @@ class dyagram:
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-    def __init__(self, inventory_file, initial=False):
+    def __init__(self, inventory_file, initial=None):
 
-        #self.current_device_is_starting_device = True
         self.initial = initial
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
-        #starting_device = None
-        # self.current_version = None
-        # self.current_hostname = None
-        # self.current_device_type = None
-        # self.current_serial_number = None
-
-        self.topology = {"devices": []}  # topology via cdp and lldp extracted data
-
-        self.username = None
-        self.password = None
-        self.ip = None
-
-        self.restconf_url = f'https://{self.ip}/restconf/data'
-        self.restconf_headers = {
-            'Accept': 'application/yang-data+json',
-            'Content-Type': 'application/yang-data+json'
-        }
-        self.device_brand = None
-        self.device_os = None
+        #self._devices_to_query = Queue()
         self._devices_queried = []
         self._devices_to_query = []
-        self._current_device = None
-
+        self.topology = {"devices": []}  # topology via cdp and lldp extracted data
+        self.username = None
+        self.password = None
+        # self.restconf_url = f'https://{self.ip}/restconf/data'
+        # self.restconf_headers = {
+        #     'Accept': 'application/yang-data+json',
+        #     'Content-Type': 'application/yang-data+json'
+        # }
         self._load_creds()
         self._pull_devices_out_of_inventory()
-
-        # self.netmiko_args_starting_device = {"device_type": "cisco_ios",
-        #                                      "host": self.starting_device,
-        #                                      "username": self.username,
-        #                                      "password": self.password}
-        # self.netmiko_args = {"device_type": "cisco_ios",
-        #                      "host": self.ip,
-        #                      "username": self.username,
-        #                      "password": self.password}
-        #self.ssh_session = self._create_netmiko_session()
-        #self._load_device_info()
 
 
     def _load_creds(self):
         #first try OS ENV
         self.username = os.environ['DYAGRAM_USERNAME']
         self.password = os.environ['DYAGRAM_PASSWORD']
-
-
-    # def _load_init_file(self):
-    #     with open(self.init_file_location, 'r') as file:
-    #         init = yaml.safe_load(file)
-    #         self.starting_device = init['starting_device']['ip']
-
-    # def _load_device_info(self):
-    #
-    #     self._get_hostname()
-    #     self._get_os_version()
-    #     self._get_serial_number()
-    #     self.current_device_type = "switch" if self.current_version in ['nx_os', 'ios_xe'] else "router"
-
-    # def _reset_device_info(self):
-    #
-    #     self.ssh_session.disconnect()
-    #     self.ssh_session = None
-    #     self.current_version = None
-    #     self.current_hostname = None
-    #     self.current_serial_number = None
 
 
     def discover(self):
@@ -140,8 +98,6 @@ class dyagram:
             for ip in self.inventory_object[site]:
                 self._devices_to_query.append(ip)
 
-        print(self._devices_to_query)
-
 
     def _discover_neighbors_by_restconf(self):
         pass
@@ -155,84 +111,16 @@ class dyagram:
          "host": device,
          "username": self.username,
          "password": self.password}
-        # try:
-        #     self.ssh_session.disconnect()
-        # except:
-        #     pass
-        #
-        # self._reset_device_info()
 
-        # if self.device['mgmt_ip_address']:
-        #     print(f"CURRENT MGMT IP ADDRESS: {self._current_device['mgmt_ip_address']}")
-        #     self.netmiko_args['host'] = self._current_device['mgmt_ip_address']
-        # elif self._current_device['ip_address']:
-        #     print(f"CURRENT NON-MGMT IP ADDRESS: {self._current_device['ip_address']}")
-        #     self.netmiko_args['host'] = self._current_device['ip_address']
-        # else:
-        #     raise Exception(f"IP Address not found:\n {self._current_device}")
         dev = ConnectHandler(**netmiko_args)
-        #self._load_device_info()
-
-        # else:
-        #     self.netmiko_args['host'] = self.netmiko_args_starting_device['host']
 
         cdp_nei_json = self._get_lldp_neighbors_regex(dev)
         self.topology["devices"].append(cdp_nei_json)
 
-        # for neighbor in cdp_nei_json['neighbors']:
-        #     print(f"NEIGHBOR: {neighbor}")
-        #     if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-        #         self._devices_to_query.append(neighbor)
         dev.disconnect()
         self._devices_queried.append(device)
 
-
-
-    # def _discover_by_cdp(self):
-    #
-    #     # try:
-    #     #     #discover by RESTCONF
-    #     #     pass
-    #     # except:
-    #     #     pass
-    #     #
-    #     #
-    #     # try:
-    #     #     cdp_nei_json_starting_device = self._get_cdp_neighbors_regex()
-    #     # except:
-    #     #     #try open config
-    #     #     pass
-    #     #
-    #     #
-    #     #
-    #     # self.topology["devices"].append(cdp_nei_json_starting_device)
-    #     # for neighbor in cdp_nei_json_starting_device['neighbors']:
-    #     #     if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-    #     #         self._devices_to_query.append(neighbor)
-    #     # self.session.disconnect()
-    #
-    #     # for device in self._devices_to_query:
-    #     #
-    #     #     try:
-    #     #         self.session.disconnect()
-    #     #     except:
-    #     #         pass
-    #     #     self._reset_device_info()
-    #     #     self.netmiko_args['host'] = device['mgmt_ip_address']
-    #     #     self.session = self._create_netmiko_session()
-    #     #     self._load_device_info()
-    #
-    #         cdp_nei_json = self._get_cdp_neighbors_regex()
-    #         self.topology["devices"].append(cdp_nei_json)
-    #         for neighbor in cdp_nei_json_starting_device['neighbors']:
-    #             if neighbor not in self._devices_to_query and neighbor not in self._devices_queried:
-    #                 self._devices_to_query.append(neighbor)
-    #         # self._devices_to_query.remove(device) # this was causing loop issue
-    #
-
     def _create_netmiko_session(self):
-        # if self.current_device_is_starting_device:
-        #     return ConnectHandler(**self.netmiko_args_starting_device)
 
         return ConnectHandler(**self.netmiko_args)
 
@@ -298,22 +186,8 @@ class dyagram:
         if cisco_nx_os_device_yang_resp.status_code == 200:
             return cisco_nx_os_device_yang_resp.json()
 
-    # def _get_lldp_neighbors_regex(self, netmiko_session):
-    #
-    #     os = self._get_os_version(netmiko_session)
-    #     lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
-    #     cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
-    #                      "chassis_id": self._get_chassis_ids_by_ssh(netmiko_session, os),
-    #                      "neighbors": []}
-    #
-    #     return cdp_info_json
 
     def _get_lldp_neighbors_regex(self, netmiko_session):
-        # print(self.ssh_session.username)
-        # print(self.ssh_session.password)
-        # print(self.ssh_session.host)
-        # print(self.ssh_session.device_type)
-
 
         os = self._get_os_version(netmiko_session)
         print(f"OS: {os}")
@@ -435,22 +309,3 @@ class dyagram:
                  }
 
         return regex[os]
-
-
-    # def _get_cdp_neighbor_regex_strings(self, os):
-    #
-    #     regex = {"ios_xe": #{"device_id": [r"Device\s+ID:(.*)\(.*\)"],
-    #                         {"system_name": [r"(?<=System Name:\s).*"],
-    #                        "local_interface": r"(?<=Local Intf:\s).*",
-    #                        "neighbor_interface": r"(?<=Port id:\s).*",
-    #                        ,
-    #
-    #              "nx_os": #{"device_id": [r"Device\s+ID:(.*)\(.*\)", r"Device\s+ID:([^\.]*)"],
-    #                        {"device_id": [r"Device\s+ID:.*"],
-    #                        "ip_address": r"Interface address.*\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)",
-    #                        "local_interface": r"Interface:\s+(.*),",
-    #                        "neighbor_interface": r"Port ID.*:\s+(.*)",
-    #                        "mgmt_ip_address": r"Mgmt address.*:\n\s+.*:\s+(\d+\.\d+\.\d+\.\d+)"}}
-    #
-    #     return regex[os]
-

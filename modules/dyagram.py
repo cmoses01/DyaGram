@@ -4,6 +4,7 @@ import re
 import time
 import os
 from netmiko import ConnectHandler
+from netmiko.ssh_autodetect import SSHDetect
 import requests
 import yaml
 from concurrent.futures import ThreadPoolExecutor
@@ -24,15 +25,10 @@ class dyagram:
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
         self._devices_queried = []
-        #self._devices_to_query = []
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self.username = None
         self.password = None
-        # self.restconf_url = f'https://{self.ip}/restconf/data'
-        # self.restconf_headers = {
-        #     'Accept': 'application/yang-data+json',
-        #     'Content-Type': 'application/yang-data+json'
-        # }
+
         self._load_creds()
         self._pull_devices_out_of_inventory()
 
@@ -51,6 +47,8 @@ class dyagram:
         :return:
         '''
 
+        print("DYAGRAM DISCOVERING NETWORK...")
+
         executor = ThreadPoolExecutor(max_workers=10)
 
         queue_empty = False
@@ -58,14 +56,23 @@ class dyagram:
             try:
                device =  self._devices_to_query.get_nowait()
                executor.submit(self._discover_neighbors_by_ssh,device)
+               print(device)
                self._devices_queried.append(device)
             except queue.Empty:
                 queue_empty = True
+            except Exception as e:
+                print(e)
 
         executor.shutdown(wait=True)
 
+        #sort topology by hostname to compare to previous
+
+        self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
+
+
         if self.initial:
             self.export_state()
+            print("\n\nDYAMGRAM COMPLETED DISCOVERY!")
         else:
             self.compare_states()
 
@@ -82,11 +89,12 @@ class dyagram:
         current_state = self.topology
 
         if state == current_state:
-            print("\n\n\n\n\nNO CHANGES IN STATE")
+            print("\n\n\nNO CHANGES IN STATE!")
+            print("DYAGRAM COMPLETE")
         else:
             print("\n\n\n\nCHANGES IN STATE!!")
-        print(f"\n\n\nSTATE FILE:\n{state}")
-        print(f"\n\n\nCURRENT STATE:\n{current_state}")
+            print(f"\n\nSTATE FILE:\n{state}")
+            print(f"\n\nCURRENT STATE:\n{current_state}")
         file.close()
 
     def get_inv_yaml_obj(self):
@@ -115,17 +123,43 @@ class dyagram:
 
     def _discover_neighbors_by_ssh(self, device):
 
-        print(f"DEVICE: {device}")
-        # if not self.current_device_is_starting_device:
-        netmiko_args = {"device_type": "cisco_ios",
+
+        autodetect_netmiko_args = {"device_type": "autodetect",
          "host": device,
          "username": self.username,
          "password": self.password}
 
+        netmiko_args = {"device_type": "",
+                        "host": device,
+                        "username": self.username,
+                        "password": self.password}
+        try:
+            guesser = SSHDetect(**autodetect_netmiko_args)
+            best_match = guesser.autodetect()
+            netmiko_args['device_type'] = best_match
+            print(f"BEST MATCH: {best_match}")
+        except:
+            netmiko_args['device_type'] = "cisco_ios"
+            print(f"Couldn't determine for {device} so trying with cisco_ios")
+
         dev = ConnectHandler(**netmiko_args)
 
-        cdp_nei_json = self._get_lldp_neighbors_regex(dev)
-        self.topology["devices"].append(cdp_nei_json)
+
+        try:
+            lldp_nei_json = self._get_lldp_neighbors_ssh_textfsm(dev)
+
+            if type(lldp_nei_json) == str:
+                raise ValueError("LLDP NEIGHBORS ARE STRs. Try without textfsm")
+        except ValueError as e:
+            print(e)
+            print(f"TRYING VIA SSH: {device}")
+            lldp_nei_json = self._get_lldp_neighbors_ssh_regex(dev)
+        except Exception as e:
+            print(e)
+        print("AFTER")
+
+        self.topology["devices"].append(lldp_nei_json)
+
 
         dev.disconnect()
         self._devices_queried.append(device)
@@ -159,18 +193,10 @@ class dyagram:
         show_ver = netmiko_session.send_command("show ver")
         return re.search("board id\s+(.*)", show_ver.lower()).group(1)
 
-    # def get_neighbors(self):
-    #
-    #     '''
-    #     returns JSON formatted cdp/lldp neighbor data
-    #     :return:
-    #     '''
-    #
-    #
-    #     return self._get_cdp_neighbors_regex()
 
     def get_restconf_netconf_capabilities(self):
         return requests.get(f"{self.restconf_url}/netconf-state/capabilities", headers=self.restconf_headers, verify=False)
+
 
     def _get_lldp_neighbors_restconf(self):
 
@@ -197,10 +223,38 @@ class dyagram:
             return cisco_nx_os_device_yang_resp.json()
 
 
-    def _get_lldp_neighbors_regex(self, netmiko_session):
+    def _get_lldp_neighbors_ssh_textfsm(self, netmiko_session):
+        os = self._get_os_version(netmiko_session)
+        lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det", use_textfsm=True)
+        if type(lldp_neighbors_output) == str:
+            return lldp_neighbors_output
+
+        lldp_info_json = {"hostname": self._get_hostname(netmiko_session),
+                         "chassis_ids": self._get_chassis_ids_by_ssh(netmiko_session, os),
+                         "neighbors": []}
+
+        neighbor_info_template = {
+            "hostname": "",
+            "local_port": "",
+            "neighbor_port": "",
+            "chassis_id": ""
+        }
+
+        for neighbor in lldp_neighbors_output:
+            neighbor_info = neighbor_info_template.copy()
+            neighbor_info['hostname'] = neighbor['neighbor']
+            neighbor_info['local_port'] = neighbor['local_interface']
+            neighbor_info['neighbor_port'] = neighbor['neighbor_interface']
+            neighbor_info['chassis_id'] = neighbor['chassis_id']
+            lldp_info_json['neighbors'].append(neighbor_info)
+
+        return lldp_info_json
+
+    def _get_lldp_neighbors_ssh_regex(self, netmiko_session):
 
         os = self._get_os_version(netmiko_session)
-        print(f"OS: {os}")
+        netmiko_session.host = os
+
         lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
         cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
                          "chassis_ids": self._get_chassis_ids_by_ssh(netmiko_session, os),
@@ -211,7 +265,6 @@ class dyagram:
 
         system_names = re.findall(regex_strs['system_name'], lldp_neighbors_output, re.MULTILINE)
 
-        print(f"SYSTEM NAMES: {system_names}")
 
 
         system_names = [x.strip(' ') for x in system_names]
@@ -259,7 +312,7 @@ class dyagram:
             counter += 1
 
         counter = 0
-        print(neighbor_interfaces)
+
         for i in neighbor_interfaces:
             cdp_info_json['neighbors'][counter]["neighbor_port"] = i
             counter += 1

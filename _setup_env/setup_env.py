@@ -8,7 +8,7 @@ netmiko_args = {
     "password": "cisco"
 }
 
-ios_xr_routers = ['10.10.20.173']
+ios_xr_routers = ['10.10.20.174']
 
 nxos_switches = ['10.10.20.177', "10.10.20.178"]
 

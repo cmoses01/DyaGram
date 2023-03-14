@@ -28,6 +28,12 @@ class dyagram:
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self.username = None
         self.password = None
+        self._neighbor_template = {
+            "hostname": "",
+            "local_port": "",
+            "neighbor_port": "",
+            "chassis_id": ""
+        }
 
         self._load_creds()
         self._pull_devices_out_of_inventory()
@@ -55,8 +61,12 @@ class dyagram:
         while not queue_empty:
             try:
                device =  self._devices_to_query.get_nowait()
+
+               try:
+                   executor.submit(self._discover_neighbors_by_restconf, device)
+
+
                executor.submit(self._discover_neighbors_by_ssh,device)
-               print(device)
                self._devices_queried.append(device)
             except queue.Empty:
                 queue_empty = True
@@ -117,12 +127,35 @@ class dyagram:
                 self._devices_to_query.put(ip)
 
 
-    def _discover_neighbors_by_restconf(self):
-        pass
+    def _discover_neighbors_by_restconf(self, device):
+
+        lldp_neighbors = self._get_lldp_neighbors_restconf(device)
+
+        self.topology["devices"].append(lldp_neighbors)
+
+        self._devices_queried.append(device)
+
+    # def _get_lldp_neighbors_by_restconf(self, device):
+    #
+    #     restconf_uri = 'restconf/data'
+    #     url = f"https://{device}/{restconf_uri}/"
+    #
+    #     try:
+    #         #openconfig
+
+
+
+
+
+
+
+
 
 
     def _discover_neighbors_by_ssh(self, device):
 
+        unable_to_find_os = False
+        CONN_SET = False
 
         autodetect_netmiko_args = {"device_type": "autodetect",
          "host": device,
@@ -139,10 +172,15 @@ class dyagram:
             netmiko_args['device_type'] = best_match
             print(f"BEST MATCH: {best_match}")
         except:
-            netmiko_args['device_type'] = "cisco_ios"
-            print(f"Couldn't determine for {device} so trying with cisco_ios")
 
-        dev = ConnectHandler(**netmiko_args)
+            dev = ConnectHandler(**netmiko_args)
+            CONN_SET = True
+            os = self._get_os_version(dev)
+            netmiko_args['device_type'] = os
+            print(f"OS FOUND BY MANUAL LOOKUP: {os}")
+
+        if not CONN_SET:
+            dev = ConnectHandler(**netmiko_args)
 
 
         try:
@@ -169,9 +207,21 @@ class dyagram:
         return ConnectHandler(**self.netmiko_args)
 
 
-    def _get_chassis_ids_by_ssh(self, netmiko_session, os):
+    def _get_chassis_ids(self, netmiko_session=None, os=None, restconf_ip=None, restconf_headers=None):
 
-        if os in ["nx_os", "ios_xe"]:
+
+        if not netmiko_session and restconf_ip:
+            resp = requests.get(f"https://{restconf_ip}//restconf/data/openconfig-interfaces:interfaces",
+                                headers=restconf_headers, verify=False)
+            if resp.status_code == 200:
+                return [i['ethernet']['state']['hw-mac-address']
+             for i in resp.json()['interfaces']['interface']
+             if 'ethernet' in i.keys() if 'state' in i['ethernet'].keys()
+             if 'hw-mac-address' in i['ethernet']['state'].keys()]
+            return None
+
+
+        elif os in ["nx_os", "ios_xe"]:
             output = netmiko_session.send_command("sh interface | inc bia ")
             re_resp = re.findall(
                 '(?<=bia\s)[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]',
@@ -198,8 +248,9 @@ class dyagram:
         return requests.get(f"{self.restconf_url}/netconf-state/capabilities", headers=self.restconf_headers, verify=False)
 
 
-    def _get_lldp_neighbors_restconf(self):
+    def _get_lldp_neighbors_restconf(self, device):
 
+        headers = {"Accept": "application/yang.data+json"}
         """
         Attempts to get lldp neighbor info via various YANG Data models starting with OpenConfig then moving to device
         specific (native)
@@ -209,10 +260,25 @@ class dyagram:
         """
 
         #first try OpenConfig YANG
-        oc_yang_resp = requests.get(f"{self.restconf_url}/openconfig-lldp:lldp/interfaces/interface/",
-                                    headers=self.restconf_headers, verify=False)
-        if oc_yang_resp.status_code == 200:
-            return oc_yang_resp.json()
+
+        oc_yang_resp = requests.get(f"https://{device}/openconfig-lldp:lldp/interfaces/interface/",
+                                    headers=headers, verify=False)
+        # if oc_yang_resp.status_code == 200:
+        #     requests.get(f"{self.restconf_url}/openconfig-lldp:lldp/interfaces/interface/",
+        #                  headers=headers, verify=False)
+
+        lldp_info_json = {"hostname": self._get_hostname(restconf_ip=device),
+                          "chassis_ids": self._get_chassis_ids(restconf_ip=device, restconf_headers=headers),
+                          "neighbors": []}
+
+        for intf in oc_yang_resp['interfaces']['interface']:
+            if 'neighbors' in intf.keys():
+                neighbor_info = self._neighbor_template.copy()
+                neighbor_info['hostname'] = intf['neighbors']['neighbor'][0]['state']['system-name']
+                neighbor_info['local_port'] = intf['name']
+                neighbor_info['neighbor_port'] = intf['neighbors']['neighbor'][0]['state']['port-id']
+                neighbor_info['chassis_id'] = intf['neighbors']['neighbor'][0]['state']['chassis-id']
+                lldp_info_json['neighbors'].append(neighbor_info)
 
         #try Cisco-NX-OS-device YANG
         cisco_nx_os_device_yang_resp = requests.get(f"{self.restconf_url}/Cisco-NX-OS-device:System/lldp-items/inst-items/",
@@ -230,18 +296,13 @@ class dyagram:
             return lldp_neighbors_output
 
         lldp_info_json = {"hostname": self._get_hostname(netmiko_session),
-                         "chassis_ids": self._get_chassis_ids_by_ssh(netmiko_session, os),
+                         "chassis_ids": self._get_chassis_ids(netmiko_session, os),
                          "neighbors": []}
 
-        neighbor_info_template = {
-            "hostname": "",
-            "local_port": "",
-            "neighbor_port": "",
-            "chassis_id": ""
-        }
+
 
         for neighbor in lldp_neighbors_output:
-            neighbor_info = neighbor_info_template.copy()
+            neighbor_info = self._neighbor_template.copy()
             neighbor_info['hostname'] = neighbor['neighbor']
             neighbor_info['local_port'] = neighbor['local_interface']
             neighbor_info['neighbor_port'] = neighbor['neighbor_interface']
@@ -257,7 +318,7 @@ class dyagram:
 
         lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
         cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
-                         "chassis_ids": self._get_chassis_ids_by_ssh(netmiko_session, os),
+                         "chassis_ids": self._get_chassis_ids(netmiko_session, os),
                          "neighbors": []}
 
         regex_strs = self._get_lldp_neighbor_regex_strings(os)
@@ -329,11 +390,30 @@ class dyagram:
 
         return cdp_info_json
 
-    def _get_hostname(self, netmiko_session):
+    def _get_hostname(self, netmiko_session=None, restconf_ip=None, restconf_headers=None):
 
-        sh_run_output = netmiko_session.send_command("sh run | inc hostname")
-        hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
-        return hostname
+
+        if not netmiko_session and restconf_ip:
+            try:
+                resp = requests.get(f"https://{restconf_ip}/restconf/data/openconfig-system:system/config/name",
+                         headers=restconf_headers, verify=False)
+                if resp.status_code == 200:
+                    return resp.json()['hostname']
+                if resp.status_code != 200:
+                    # try nexus TEMPORARY
+                    resp = requests.get(f"https://{restconf_ip}/restconf/data/Cisco-NX-OS-device:System/name",
+                                        headers=restconf_headers, verify=False)
+                    if resp.status_code == 200:
+                        return resp.json()['name']
+
+            except Exception as e:
+                print(e)
+
+        else:
+            sh_run_output = netmiko_session.send_command("sh run | inc hostname")
+            hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
+            return hostname
+        return None
 
     def _get_os_version(self, netmiko_session):
 

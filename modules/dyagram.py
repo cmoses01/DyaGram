@@ -9,7 +9,9 @@ import requests
 import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
+from urllib3.exceptions import InsecureRequestWarning
 
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 #during multithread
 
@@ -44,6 +46,23 @@ class dyagram:
         self.username = os.environ['DYAGRAM_USERNAME']
         self.password = os.environ['DYAGRAM_PASSWORD']
 
+    def __discover_restconf_ssh(self, device):
+        '''
+        this enables us to keep multithreading and not block for waiting for an exception for restconf before trying
+        ssh.
+
+        See inside discover() for threading
+        :param device:
+        :return:
+        '''
+
+        try:
+            resp = self._discover_neighbors_by_restconf(device)
+            if not resp:
+                raise
+        except:
+            # try ssh
+            self._discover_neighbors_by_ssh(device)
 
     def discover(self):
         '''
@@ -61,13 +80,9 @@ class dyagram:
         while not queue_empty:
             try:
                device =  self._devices_to_query.get_nowait()
-
-               try:
-                   executor.submit(self._discover_neighbors_by_restconf, device)
-
-
-               executor.submit(self._discover_neighbors_by_ssh,device)
+               executor.submit(self.__discover_restconf_ssh, device)
                self._devices_queried.append(device)
+
             except queue.Empty:
                 queue_empty = True
             except Exception as e:
@@ -130,10 +145,12 @@ class dyagram:
     def _discover_neighbors_by_restconf(self, device):
 
         lldp_neighbors = self._get_lldp_neighbors_restconf(device)
-
+        print(f"LLDP NEIGHBORS IN PARENT MODULE\n{lldp_neighbors}")
         self.topology["devices"].append(lldp_neighbors)
 
         self._devices_queried.append(device)
+
+        return True
 
     # def _get_lldp_neighbors_by_restconf(self, device):
     #
@@ -207,17 +224,28 @@ class dyagram:
         return ConnectHandler(**self.netmiko_args)
 
 
-    def _get_chassis_ids(self, netmiko_session=None, os=None, restconf_ip=None, restconf_headers=None):
+    def _get_chassis_ids(self, netmiko_session=None, os=None, restconf_session=None):
 
 
-        if not netmiko_session and restconf_ip:
-            resp = requests.get(f"https://{restconf_ip}//restconf/data/openconfig-interfaces:interfaces",
-                                headers=restconf_headers, verify=False)
+        if not netmiko_session and restconf_session:
+
+            try:
+                print("ATTEMPTING GETTING CHASSIS IDs VIA OC")
+                resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-interfaces:interfaces")
+                print("FINISHED CALL FOR CHASSIS")
+                print(resp.status_code)
+            except Exception as e:
+                print(e)
+            print(f"OC RESPONSE JSON: {resp.json()}")
             if resp.status_code == 200:
-                return [i['ethernet']['state']['hw-mac-address']
+                print("FINISHED GETTING CHASSIS IDs VIA OC")
+                return  [i['ethernet']['state']['hw-mac-address']
              for i in resp.json()['interfaces']['interface']
              if 'ethernet' in i.keys() if 'state' in i['ethernet'].keys()
              if 'hw-mac-address' in i['ethernet']['state'].keys()]
+
+
+            print("FAILED GETTING CHASSIS IDs VIA OC")
             return None
 
 
@@ -258,35 +286,50 @@ class dyagram:
         returns lldp neighbor info in
         :return:
         """
+        session = requests.session()
+        session.auth = (os.environ['DYAGRAM_USERNAME'], os.environ['DYAGRAM_PASSWORD'])
+        session.headers = headers
+        session.verify = False
+        session.base_url = f"https://{device}/restconf/data"
 
         #first try OpenConfig YANG
+        print("ATTEMPTING LLDP OC CALL")
+        oc_yang_resp = session.get(f"{session.base_url}/openconfig-lldp:lldp/interfaces/")
+        print("FINISHED LLDP OC CALL\n")
 
-        oc_yang_resp = requests.get(f"https://{device}/openconfig-lldp:lldp/interfaces/interface/",
-                                    headers=headers, verify=False)
-        # if oc_yang_resp.status_code == 200:
-        #     requests.get(f"{self.restconf_url}/openconfig-lldp:lldp/interfaces/interface/",
-        #                  headers=headers, verify=False)
 
-        lldp_info_json = {"hostname": self._get_hostname(restconf_ip=device),
-                          "chassis_ids": self._get_chassis_ids(restconf_ip=device, restconf_headers=headers),
+        lldp_info_json = {"hostname": self._get_hostname(restconf_session=session),
+                          "chassis_ids": self._get_chassis_ids(restconf_session=session),
                           "neighbors": []}
+        print(f"GOT LLDP INFO JSON FOR DEVICE {device}")
+        try:
+            for intf in oc_yang_resp.json()['interfaces']['interface']:
+                if 'neighbors' in intf.keys():
 
-        for intf in oc_yang_resp['interfaces']['interface']:
-            if 'neighbors' in intf.keys():
-                neighbor_info = self._neighbor_template.copy()
-                neighbor_info['hostname'] = intf['neighbors']['neighbor'][0]['state']['system-name']
-                neighbor_info['local_port'] = intf['name']
-                neighbor_info['neighbor_port'] = intf['neighbors']['neighbor'][0]['state']['port-id']
-                neighbor_info['chassis_id'] = intf['neighbors']['neighbor'][0]['state']['chassis-id']
-                lldp_info_json['neighbors'].append(neighbor_info)
+                    neighbor_info = self._neighbor_template.copy()
+                    neighbor_info['hostname'] = intf['neighbors']['neighbor'][0]['state']['system-name']
+                    neighbor_info['local_port'] = intf['name']
+                    neighbor_info['neighbor_port'] = intf['neighbors']['neighbor'][0]['state']['port-id']
+                    neighbor_info['chassis_id'] = intf['neighbors']['neighbor'][0]['state']['chassis-id']
+                    lldp_info_json['neighbors'].append(neighbor_info)
 
-        #try Cisco-NX-OS-device YANG
-        cisco_nx_os_device_yang_resp = requests.get(f"{self.restconf_url}/Cisco-NX-OS-device:System/lldp-items/inst-items/",
-                                                    headers={"Accept": "application/yang.data+json", "Content-Type": "application/yang.data+json"}
-                                                    , verify=False)
+        except Exception as e:
+            print(f"EXCEPTION: {e}")
+        print("AFTER TRY")
 
-        if cisco_nx_os_device_yang_resp.status_code == 200:
-            return cisco_nx_os_device_yang_resp.json()
+        # #try Cisco-NX-OS-device YANG
+        # cisco_nx_os_device_yang_resp = requests.get(f"{self.restconf_url}/Cisco-NX-OS-device:System/lldp-items/inst-items/",
+        #                                             headers={"Accept": "application/yang.data+json", "Content-Type": "application/yang.data+json"}
+        #                                             , verify=False)
+
+        # if cisco_nx_os_device_yang_resp.status_code == 200:
+        #     return cisco_nx_os_device_yang_resp.json()
+
+        if oc_yang_resp.status_code == 200:
+            print("STATUS CODE IS 200")
+            return lldp_info_json
+        print(f"STATUS CODE IS {oc_yang_resp.status_code}")
+        raise Exception("UNABLE TO USE RESTCONF")
 
 
     def _get_lldp_neighbors_ssh_textfsm(self, netmiko_session):
@@ -390,20 +433,24 @@ class dyagram:
 
         return cdp_info_json
 
-    def _get_hostname(self, netmiko_session=None, restconf_ip=None, restconf_headers=None):
+    def _get_hostname(self, netmiko_session=None, restconf_session=None):
 
 
-        if not netmiko_session and restconf_ip:
+        if not netmiko_session and restconf_session:
             try:
-                resp = requests.get(f"https://{restconf_ip}/restconf/data/openconfig-system:system/config/name",
-                         headers=restconf_headers, verify=False)
+                print("ATTEMPTING GET HOSTNAME VIA OC")
+                resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-system:system/config/name")
                 if resp.status_code == 200:
+                    print("FINISHED GET HOSTNAME VIA OC")
                     return resp.json()['hostname']
                 if resp.status_code != 200:
+                    print("FAILED GET HOSTNAME VIA OC")
+                    print("ATTEMPTING GET HOSTNAME VIA NXOS YANG")
                     # try nexus TEMPORARY
-                    resp = requests.get(f"https://{restconf_ip}/restconf/data/Cisco-NX-OS-device:System/name",
-                                        headers=restconf_headers, verify=False)
+                    resp = restconf_session.get(f"{restconf_session.base_url}/Cisco-NX-OS-device:System/name")
+
                     if resp.status_code == 200:
+                        print("FINISHED GET HOSTNAME VIA NXOS YANG")
                         return resp.json()['name']
 
             except Exception as e:

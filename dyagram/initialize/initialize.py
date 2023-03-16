@@ -1,4 +1,7 @@
 import os
+import time
+from pathlib import Path
+import yaml
 
 class dyagramInitialize:
 
@@ -18,8 +21,36 @@ class dyagramInitialize:
         self.clean = True
         return False
 
+    def get_sites_from_inventory(self):
+
+        sites = []
+        with open('inventory.yml', 'r') as file:
+            try:
+                # Converts yaml document to python object
+                inventory_object = yaml.safe_load(file)
+
+
+            except yaml.YAMLError as e:
+                print(e)
+        for site in inventory_object:
+            sites.append(site)
+        return sites
+
+
     def make_dyagram_folder_structure(self):
-        os.mkdir(self.site)
+
+        path = Path('inventory.yml')
+        if path.is_file():
+            sites = self.get_sites_from_inventory()
+            for site in sites:
+                os.mkdir(site)
+                print(f'Created site: {site}')
+            self.site = sites[0]
+        else:
+            self.site = input("Site Name: ")
+            os.mkdir(self.site)
+            print(f"Created site: {self.site}")
+
         os.mkdir('.info')
         with open('.info/info.json', 'w') as f:
             import json
@@ -28,15 +59,13 @@ class dyagramInitialize:
 
 
 def main(site=None):
-    if not site:
-        raise Exception("Site not defined")
+    print("\n\n-- DyaGram Initializing --\n")
     try:
         dyinit = dyagramInitialize(site)
         dyinit.make_dyagram_folder_structure()
-        print(f"Created site: {site}")
     except Exception as e:
         print(e)
-
-    print("\n\nDyaGram initialized!\n")
+    time.sleep(1)
+    print("\n-- DyaGram Initialized --\n")
 
 

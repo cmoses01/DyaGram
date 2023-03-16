@@ -52,7 +52,7 @@ class dyagram:
         try:
             file = open(r".info/info.json", 'r')
             info = json.load(file)
-            print(info['current_site'])
+            #print(info['current_site'])
             return info['current_site']
         except:
             print("Unable to load last site.")
@@ -94,7 +94,6 @@ class dyagram:
         :return:
         '''
 
-        print("DYAGRAM DISCOVERING NETWORK...")
 
         executor = ThreadPoolExecutor(max_workers=10)
 
@@ -120,7 +119,6 @@ class dyagram:
 
         if not self.state_exists:
             self.export_state()
-            print("\n\nDYAMGRAM COMPLETED DISCOVERY!")
         else:
             self.compare_states()
 
@@ -140,12 +138,10 @@ class dyagram:
         current_state = self.topology
 
         if state == current_state:
-            print("--DyaGram Discovery Complete--")
-            print("\n\n\nNo changes in state\n\n")
+            print("\nNo changes in state\n")
 
         else:
-            print("--DyaGram Discovery Complete--")
-            print("\n\n\n\nCHANGES IN STATE!!")
+            print("\n\nCHANGES IN STATE!!")
             print(f"\n\nSTATE FILE:\n{state}")
             print(f"\n\nCURRENT STATE:\n{current_state}")
         file.close()
@@ -525,18 +521,17 @@ def main():
 
     #dyagram = dyagram(args.inventory, initial=True)
     if args.first_arg[0].lower() == "init":
-        from initialize import initialize
-        print("Initializing DyaGram..\n\n")
-        site = input("Site Name: ")
-        initialize.main(site)
+        from dyagram.initialize import initialize
+        initialize.main()
 
     if args.first_arg[0].lower() == "discover":
-        print("DISCOVERING NETWORK..")
+        print("\n\n-- DyaGram Discovering Started --\n")
         dy = dyagram()
         dy.discover()
+        print("\n\n-- DyaGram Discovering Completed --\n")
 
     if args.first_arg[0].lower() == "site":
-        from sites.sites import sites
+        from dyagram.sites.sites import sites
         s = sites()
         if len(args.first_arg) == 1:
             s.list_sites_in_cli()

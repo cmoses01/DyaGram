@@ -28,13 +28,16 @@ class sites:
     def list_sites_in_cli(self):
         current_site = self.get_current_site()
         sites = self.get_sites()
+        print("\n-- DyaGram Sites -- \n")
         if ".info" in sites:
             sites.remove(".info")
         for site in sites:
+
             if site == current_site:
                 print(f"* {site}")
             else:
-                print(site)
+                print(f"  {site}")
+        print("\n\n")
 
     def switch_site(self, site):
         sites = self.get_sites()

@@ -8,14 +8,14 @@ req = ['bcrypt==4.0.1','cffi==1.15.1','cryptography==39.0.1','future==0.18.3',
 
 setup(
     name="DyaGram",
-    version="0.0.16",
+    version="0.0.29",
     author="Chris Moses",
     author_email="chrismoses121@gmail.com",
     description="IaC Tool to map out a diagram of a network",
-    packages=find_packages(where="modules"),
+    packages=find_packages(),
     install_requires=req,
     entry_points={
-        'console_scripts': ['dyagram=modules.dyagram:main']
+        'console_scripts': ['dyagram=dyagram.dyagram:main']
         ,
     }
 )

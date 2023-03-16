@@ -11,7 +11,7 @@ setup(
     version="0.0.16",
     author="Chris Moses",
     author_email="chrismoses121@gmail.com",
-    description="IaC Tool to map out diagram of Network",
+    description="IaC Tool to map out a diagram of a network",
     packages=find_packages(where="modules"),
     install_requires=req,
     entry_points={

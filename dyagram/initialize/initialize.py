@@ -3,7 +3,8 @@ import os
 class dyagramInitialize:
 
     def __init__(self, site):
-        self.clean = self.has_init_been_ran()
+        self.clean = None
+        self.has_init_been_ran()
         if not self.clean:
             raise Exception('"dyagram init" command already ran.')
         self.site = site
@@ -11,8 +12,10 @@ class dyagramInitialize:
 
     def has_init_been_ran(self):
         dir = os.listdir()
-        if dir:
+        if '.info' in dir:
+            self.clean = False
             return True
+        self.clean = True
         return False
 
     def make_dyagram_folder_structure(self):

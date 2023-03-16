@@ -3,6 +3,7 @@ import queue
 import re
 import os
 import traceback
+from pathlib import Path
 
 from netmiko import ConnectHandler
 from netmiko import NetmikoAuthenticationException
@@ -12,7 +13,9 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from urllib3.exceptions import InsecureRequestWarning
-from pathlib import Path
+
+from difflib import context_diff
+
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
@@ -26,7 +29,6 @@ class dyagram:
     def __init__(self, inventory_file=None, new_state=None):
 
         self.state_exists = self.does_state_exist()
-        print(f"STATE EXISTS? : {self.state_exists}")
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
@@ -77,14 +79,11 @@ class dyagram:
         '''
 
         try:
-            print(f"ATTEMPTING RESTCONF FOR DEVICE {device}")
             resp = self._discover_neighbors_by_restconf(device)
             if not resp:
-                print(f"FAILED RESTCONF FOR DEVICE {device}")
                 raise
         except:
             # try ssh
-            print(f"ATTEMPTING SSH FOR DEVICE {device}")
             self._discover_neighbors_by_ssh(device)
 
     def discover(self):
@@ -110,7 +109,7 @@ class dyagram:
                 queue_empty = True
             except Exception:
                 tb = self.get_traceback()
-                print(tb)
+                #print(tb)
 
         executor.shutdown(wait=True)
 
@@ -141,13 +140,17 @@ class dyagram:
         current_state = self.topology
 
         if state == current_state:
-            print("\n\n\nNO CHANGES IN STATE!")
-            print("DYAGRAM COMPLETE")
+            print("--DyaGram Discovery Complete--")
+            print("\n\n\nNo changes in state\n\n")
+
         else:
+            print("--DyaGram Discovery Complete--")
             print("\n\n\n\nCHANGES IN STATE!!")
             print(f"\n\nSTATE FILE:\n{state}")
             print(f"\n\nCURRENT STATE:\n{current_state}")
         file.close()
+
+
 
     def get_inv_yaml_obj(self):
 
@@ -205,7 +208,7 @@ class dyagram:
             netmiko_args['device_type'] = best_match
 
         except NetmikoAuthenticationException:
-            print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
+           # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
             return False
         except:
             try:
@@ -216,7 +219,7 @@ class dyagram:
                 dev.enable()
             except Exception:
                 tb = self.get_traceback()
-                print(tb)
+                #print(tb)
 
             CONN_SET = True
             os = self._get_os_version(dev)
@@ -233,11 +236,11 @@ class dyagram:
             if type(lldp_nei_json) == str:
                 raise ValueError("LLDP NEIGHBORS ARE STRs. Try without textfsm")
         except ValueError as e:
-            print(e)
+            #print(e)
             lldp_nei_json = self._get_lldp_neighbors_ssh_regex(dev)
         except Exception:
             tb = self.get_traceback()
-            print(tb)
+            #print(tb)
 
 
         self.topology["devices"].append(lldp_nei_json)
@@ -260,7 +263,7 @@ class dyagram:
                 resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-interfaces:interfaces")
             except Exception:
                 tb = self.get_traceback()
-                print(tb)
+                #print(tb)
 
             if resp.status_code == 200:
                 return  [i['ethernet']['state']['hw-mac-address']
@@ -338,7 +341,7 @@ class dyagram:
 
         except Exception:
             tb = self.get_traceback()
-            print(tb)
+            #print(tb)
 
         if oc_yang_resp.status_code == 200:
             return lldp_info_json
@@ -416,13 +419,6 @@ class dyagram:
             cdp_info_json['neighbors'][counter]['hostname'] = i
             counter += 1
 
-        # counter = 0
-
-        # print(cdp_info_json['neighbors'])
-        # for i in ip_addresses:
-        #     cdp_info_json['neighbors'][counter]["ip_address"] = i
-        #     counter += 1
-
         counter = 0
         for i in local_interfaces:
             cdp_info_json['neighbors'][counter]["local_port"] = i
@@ -464,12 +460,12 @@ class dyagram:
 
             except Exception:
                 tb = self.get_traceback()
-                print(tb)
+                #print(tb)
 
         else:
 
             sh_run_output = netmiko_session.send_command("sh run | inc hostname")
-            print(sh_run_output)
+            #print(sh_run_output)
             hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
 
             return hostname
@@ -514,6 +510,7 @@ class dyagram:
         return regex[os]
 
 
+
 def main():
 
     #from dyagram.dyagram import dyagram
@@ -521,25 +518,40 @@ def main():
 
     parser = argparse.ArgumentParser()
     #parser.add_argument('-i', dest="inventory")
-    parser.add_argument('first_arg')
+    parser.add_argument('first_arg', nargs='*')
 
     args = parser.parse_args()
 
 
     #dyagram = dyagram(args.inventory, initial=True)
-    if args.first_arg.lower() == "init":
+    if args.first_arg[0].lower() == "init":
         from initialize import initialize
         print("Initializing DyaGram..\n\n")
         site = input("Site Name: ")
         initialize.main(site)
 
-    if args.first_arg.lower() == "discover":
-        print("DISCOVERING NETWORK")
+    if args.first_arg[0].lower() == "discover":
+        print("DISCOVERING NETWORK..")
         dy = dyagram()
         dy.discover()
 
-    if args.first_arg.lower() == "sites":
-        print("LIST OF SITES AND STAR BY CURRENT")
+    if args.first_arg[0].lower() == "site":
+        from sites.sites import sites
+        s = sites()
+        if len(args.first_arg) == 1:
+            s.list_sites_in_cli()
+        elif len(args.first_arg) > 1:
+            if args.first_arg[1].lower() == "new":
+                try:
+                    s.make_new_site(args.first_arg[2])
+                except Exception as e:
+                    #print(e)
+                    print("Missing argument : <site>")
+            if args.first_arg[1].lower() == "switch":
+                try:
+                    s.switch_site(args.first_arg[2].lower())
+                except:
+                    print(f"Site {args.first_arg[2]} doesn't exist")
 
 
 if __name__ == "__main__":

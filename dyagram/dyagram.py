@@ -12,6 +12,7 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from urllib3.exceptions import InsecureRequestWarning
+from pathlib import Path
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
@@ -22,9 +23,10 @@ class dyagram:
     # cdp_info = {} will need global list in future when multithreaded/multiprocessed
     # Right now class only supports SSH (netmiko), will need to enable REST later
 
-    def __init__(self, inventory_file, new_state=None):
+    def __init__(self, inventory_file=None, new_state=None):
 
-        self.new_state = new_state
+        self.state_exists = self.does_state_exist()
+        print(f"STATE EXISTS? : {self.state_exists}")
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
@@ -32,6 +34,7 @@ class dyagram:
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self.username = None
         self.password = None
+        self.site = self.get_current_site()
         self._neighbor_template = {
             "hostname": "",
             "local_port": "",
@@ -42,6 +45,15 @@ class dyagram:
         self._load_creds()
         self._load_inventory()
 
+
+    def get_current_site(self):
+        try:
+            file = open(r".info/info.json", 'r')
+            info = json.load(file)
+            print(info['current_site'])
+            return info['current_site']
+        except:
+            print("Unable to load last site.")
 
     @staticmethod
     def get_traceback():
@@ -107,21 +119,24 @@ class dyagram:
         self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
 
 
-        if self.new_state:
+        if not self.state_exists:
             self.export_state()
             print("\n\nDYAMGRAM COMPLETED DISCOVERY!")
         else:
             self.compare_states()
 
+    def does_state_exist(self):
+        path = Path("lab/state.json")
+        return path.is_file()
 
     def export_state(self):
 
-        file = open(r"../app/state.json", 'w')
+        file = open(rf"{self.site}/state.json", 'w')
         json.dump(self.topology, file)
         file.close()
 
     def compare_states(self):
-        file = open(r"/app/state.json", 'r')
+        file = open(rf"{self.site}/state.json", 'r')
         state = json.load(file)
         current_state = self.topology
 
@@ -136,6 +151,14 @@ class dyagram:
 
     def get_inv_yaml_obj(self):
 
+        if not self.inventory_file:
+            self.inventory_file = "inventory.yml"
+
+        path = Path(self.inventory_file)
+        if not path.is_file():
+            print(f"Unable to find inventory file {self.inventory_file}")
+            return None
+
         with open(self.inventory_file, 'r') as file:
             try:
                 # Converts yaml document to python object
@@ -145,13 +168,10 @@ class dyagram:
             except yaml.YAMLError as e:
                 print(e)
 
-
-
     def _load_inventory(self):
 
-        for site in self.inventory_object.keys():
-            for ip in self.inventory_object[site]:
-                self._devices_to_query.put(ip)
+        for ip in self.inventory_object[self.site]:
+            self._devices_to_query.put(ip)
 
 
     def _discover_neighbors_by_restconf(self, device):
@@ -513,10 +533,13 @@ def main():
         site = input("Site Name: ")
         initialize.main(site)
 
-
     if args.first_arg.lower() == "discover":
-        dyagram.discover()
         print("DISCOVERING NETWORK")
+        dy = dyagram()
+        dy.discover()
+
+    if args.first_arg.lower() == "sites":
+        print("LIST OF SITES AND STAR BY CURRENT")
 
 
 if __name__ == "__main__":

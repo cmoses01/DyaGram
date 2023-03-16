@@ -6,7 +6,7 @@ class dyagramInitialize:
         self.clean = None
         self.has_init_been_ran()
         if not self.clean:
-            raise Exception('"dyagram init" command already ran.')
+            raise Exception('DyaGram is already initialized')
         self.site = site
 
 

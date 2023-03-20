@@ -116,14 +116,13 @@ class dyagram:
 
         self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
 
-
         if not self.state_exists:
             self.export_state()
         else:
             self.compare_states()
 
     def does_state_exist(self):
-        path = Path("lab/state.json")
+        path = Path(f"{self.site}/state.json")
         return path.is_file()
 
     def export_state(self):

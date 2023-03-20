@@ -28,7 +28,7 @@ class dyagram:
 
     def __init__(self, inventory_file=None, new_state=None):
 
-        self.state_exists = self.does_state_exist()
+
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
@@ -37,6 +37,7 @@ class dyagram:
         self.username = None
         self.password = None
         self.site = self.get_current_site()
+        self.state_exists = self.does_state_exist()
         self._neighbor_template = {
             "hostname": "",
             "local_port": "",

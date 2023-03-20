@@ -8,7 +8,7 @@ req = ['bcrypt==4.0.1','cffi==1.15.1','cryptography==39.0.1','future==0.18.3',
 
 setup(
     name="DyaGram",
-    version="0.0.29",
+    version="0.0.31",
     author="Chris Moses",
     author_email="chrismoses121@gmail.com",
     description="IaC Tool to map out a diagram of a network",

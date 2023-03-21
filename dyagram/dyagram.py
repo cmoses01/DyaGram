@@ -28,7 +28,6 @@ class dyagram:
 
     def __init__(self, inventory_file=None, new_state=None):
 
-
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
@@ -69,40 +68,48 @@ class dyagram:
         self.username = os.environ['DYAGRAM_USERNAME']
         self.password = os.environ['DYAGRAM_PASSWORD']
 
-    def __discover_restconf_ssh(self, device):
-        '''
+    def __discover_lldp_neighbors(self, device):
+
+        """
         this enables us to keep multithreading and not block for waiting for an exception for restconf before trying
         ssh.
 
         See inside discover() for threading
         :param device:
         :return:
-        '''
+        """
 
         try:
-            resp = self._discover_neighbors_by_restconf(device)
-            if not resp:
+            resp = self._discover_lldp_neighbors_by_restconf(device)
+            if not resp or resp.status_code != 200:
                 raise
         except:
             # try ssh
-            self._discover_neighbors_by_ssh(device)
+            self._discover_lldp_neighbors_by_ssh(device)
+
 
     def discover(self):
-        '''
+
+        """
 
         Generates topology via cdp/lldp neighbors into a json object assigned to topology attribute
 
         :return:
-        '''
+        """
 
-
-        executor = ThreadPoolExecutor(max_workers=10)
+        executor = ThreadPoolExecutor(max_workers=30)
 
         queue_empty = False
         while not queue_empty:
             try:
-               device =  self._devices_to_query.get_nowait()
-               executor.submit(self.__discover_restconf_ssh, device)
+
+               device = self._devices_to_query.get_nowait()
+               self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': []})
+
+               executor.submit(self.__discover_lldp_neighbors, device)
+               executor.submit(self.__discover_routes, device)
+               #executor.submit(self.__discover_dynamic_routing_neighbors, device)
+
                self._devices_queried.append(device)
 
             except queue.Empty:
@@ -110,6 +117,7 @@ class dyagram:
             except Exception:
                 tb = self.get_traceback()
                 #print(tb)
+
 
         executor.shutdown(wait=True)
 
@@ -133,6 +141,7 @@ class dyagram:
         file.close()
 
     def compare_states(self):
+
         file = open(rf"{self.site}/state.json", 'r')
         state = json.load(file)
         current_state = self.topology
@@ -147,6 +156,97 @@ class dyagram:
         file.close()
 
 
+    def __discover_routes(self, device):
+
+
+
+        try:
+            routes = self.discover_routes_restconf(device)
+            if not routes or routes.status_code != 200:
+                raise
+        except:
+            routes = self.discover_routes_ssh(device)
+
+        return routes
+
+    def discover_routes_restconf(self):
+        return None
+
+    def discover_routes_ssh(self, device):
+
+        CONN_SET = False
+
+        autodetect_netmiko_args = {"device_type": "autodetect",
+                                   "host": device,
+                                   "username": self.username,
+                                   "password": self.password}
+
+        netmiko_args = {"device_type": "",
+                        "host": device,
+                        "username": self.username,
+                        "password": self.password,
+                        "secret": self.password}
+
+        try:
+            guesser = SSHDetect(**autodetect_netmiko_args)
+            best_match = guesser.autodetect()
+            netmiko_args['device_type'] = best_match
+
+        except NetmikoAuthenticationException:
+            # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
+            return False
+        except:
+            try:
+                if not netmiko_args['device_type']:
+                    # Later put in unable to find OS
+                    netmiko_args['device_type'] = "cisco_ios"
+                dev = ConnectHandler(**netmiko_args)
+                dev.enable()
+            except Exception:
+                tb = self.get_traceback()
+                # print(tb)
+
+            CONN_SET = True
+            os = self._get_os_version(dev)
+            netmiko_args['device_type'] = os
+
+        if not CONN_SET:
+            dev = ConnectHandler(**netmiko_args)
+
+        dev.enable()
+
+        show_ip_route = dev.send_command("show ip route vrf all", use_textfsm=True)
+
+        for route in show_ip_route:
+            if 'uptime' in route.keys():
+                route.pop('uptime')
+
+        dev.disconnect()
+        return show_ip_route
+
+    def __discover_dynamic_routing_neighbors(self, device):
+
+        self.discover_ospf_neighbors(device)
+
+        self.discover_eigrp_neigbors(device)
+
+        self.discover_bgp_neighbors(device)
+
+    def discover_ospf_neighbors(self, device):
+        pass
+
+    def discover_eigrp_neigbors(self, device):
+        pass
+
+    def discover_bgp_neighbors(self, device):
+        pass
+
+    def discover_ospf_neighbors_via_ssh(self, session):
+
+        pass
+
+    def discover_ospf_neighbors_via_restconf(self):
+        pass
 
     def get_inv_yaml_obj(self):
 
@@ -173,10 +273,16 @@ class dyagram:
             self._devices_to_query.put(ip)
 
 
-    def _discover_neighbors_by_restconf(self, device):
+    def _discover_lldp_neighbors_by_restconf(self, device):
         try:
             lldp_neighbors = self._get_lldp_neighbors_restconf(device)
-            self.topology["devices"].append(lldp_neighbors)
+
+            for i in self.topology['devices']:
+                if i['inventory_ip'] == device:
+                    i['hostname'] = lldp_neighbors['hostname']
+                    lldp_neighbors.pop('hostname')
+                    i['layer2'] = lldp_neighbors
+                    break
 
             self._devices_queried.append(device)
         except:
@@ -184,7 +290,7 @@ class dyagram:
 
         return True
 
-    def _discover_neighbors_by_ssh(self, device):
+    def _discover_lldp_neighbors_by_ssh(self, device):
 
         CONN_SET = False
 
@@ -223,7 +329,8 @@ class dyagram:
 
         if not CONN_SET:
             dev = ConnectHandler(**netmiko_args)
-            dev.enable()
+
+        dev.enable()
 
 
         try:
@@ -238,9 +345,12 @@ class dyagram:
             tb = self.get_traceback()
             #print(tb)
 
-
-        self.topology["devices"].append(lldp_nei_json)
-
+        for i in self.topology["devices"]:
+            if i['inventory_ip'] == device:
+                i['hostname'] = lldp_nei_json['hostname']
+                lldp_nei_json.pop("hostname")
+                i['layer2'].append(lldp_nei_json)
+                break
 
         dev.disconnect()
         self._devices_queried.append(device)
@@ -259,7 +369,7 @@ class dyagram:
                 resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-interfaces:interfaces")
             except Exception:
                 tb = self.get_traceback()
-                #print(tb)
+                #print(tb) LOG THIS
 
             if resp.status_code == 200:
                 return  [i['ethernet']['state']['hw-mac-address']
@@ -509,17 +619,14 @@ class dyagram:
 
 def main():
 
-    #from dyagram.dyagram import dyagram
     import argparse
 
     parser = argparse.ArgumentParser()
-    #parser.add_argument('-i', dest="inventory")
+
     parser.add_argument('first_arg', nargs='*')
 
     args = parser.parse_args()
 
-
-    #dyagram = dyagram(args.inventory, initial=True)
     if args.first_arg[0].lower() == "init":
         from dyagram.initialize import initialize
         initialize.main()
@@ -540,7 +647,6 @@ def main():
                 try:
                     s.make_new_site(args.first_arg[2])
                 except Exception as e:
-                    #print(e)
                     print("Missing argument : <site>")
             if args.first_arg[1].lower() == "switch":
                 try:

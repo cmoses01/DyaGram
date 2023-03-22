@@ -13,20 +13,17 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from urllib3.exceptions import InsecureRequestWarning
+import logging
 
-from difflib import context_diff
 
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-#during multithread
+
 
 class dyagram:
 
-    # cdp_info = {} will need global list in future when multithreaded/multiprocessed
-    # Right now class only supports SSH (netmiko), will need to enable REST later
-
-    def __init__(self, inventory_file=None, new_state=None):
+    def __init__(self, inventory_file=None, verbose=False):
 
         self.inventory_file = inventory_file
         self.inventory_object = self.get_inv_yaml_obj()
@@ -46,7 +43,13 @@ class dyagram:
 
         self._load_creds()
         self._load_inventory()
+        self.verbose = self.enable_verbose() if verbose else None
 
+    def enable_verbose(self):
+        logging.basicConfig(format=' %(message)s')
+        log = logging.getLogger("DYAGRAM")
+        log.setLevel(logging.INFO)
+        self.verbose = log
 
     def get_current_site(self):
         try:
@@ -65,8 +68,11 @@ class dyagram:
 
     def _load_creds(self):
         #first try OS ENV
+        self.log.info("Loading Credentials")
         self.username = os.environ['DYAGRAM_USERNAME']
         self.password = os.environ['DYAGRAM_PASSWORD']
+        self.log.info("Loaded Credentials")
+
 
     def __discover_lldp_neighbors(self, device):
 
@@ -80,12 +86,17 @@ class dyagram:
         """
 
         try:
+            self.log.info(f"Discovering LLDP Neighbors via RESTCONF for device: {device}")
             resp = self._discover_lldp_neighbors_by_restconf(device)
             if not resp or resp.status_code != 200:
                 raise
+            self.log.info(f"SUCCESSFULLY Discovered LLDP Neighbors via RESTCONF for device: {device}")
         except:
             # try ssh
+            self.log.info(f"Unable to Discover LLDP Neighbors via RESTCONF for device: {device}\nInstead, will attempt to discover via SSH")
+            self.log.info(f"Discovering LLDP Neighbors via SSH for device: {device}")
             self._discover_lldp_neighbors_by_ssh(device)
+            self.log.info(f"SUCCESSFULLY Discovered LLDP Neighbors via SSH for device: {device}")
 
 
     def discover(self):
@@ -160,11 +171,16 @@ class dyagram:
 
 
         try:
+            self.log.info(f"Discovering routes via RESTCONF for device {device}")
             routes = self.discover_routes_restconf(device)
             if not routes or routes.status_code != 200:
                 raise
+            self.log.info(f"SUCCESSFULLY Discovered routes via RESTCONF for device {device}")
         except:
+            self.log.info(f"Unable to Discover routes via RESTCONF for device {device}\nInstead, will now try via SSH.")
+            self.log.info(f"Discovering routes via SSH for device {device}")
             routes = self.discover_routes_ssh(device)
+            self.log.info(f"SUCCESSFULLY Discovered routes via SSH for device {device}")
 
         return True
 

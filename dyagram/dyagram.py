@@ -107,7 +107,7 @@ class dyagram:
                self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': []})
 
                executor.submit(self.__discover_lldp_neighbors, device)
-               executor.submit(self.__discover_routes, device)
+               executor.submit(self.discover_routes, device)
                #executor.submit(self.__discover_dynamic_routing_neighbors, device)
 
                self._devices_queried.append(device)
@@ -156,8 +156,7 @@ class dyagram:
         file.close()
 
 
-    def __discover_routes(self, device):
-
+    def discover_routes(self, device):
 
 
         try:
@@ -167,7 +166,7 @@ class dyagram:
         except:
             routes = self.discover_routes_ssh(device)
 
-        return routes
+        return True
 
     def discover_routes_restconf(self):
         return None
@@ -215,14 +214,17 @@ class dyagram:
 
         dev.enable()
 
-        show_ip_route = dev.send_command("show ip route vrf all", use_textfsm=True)
+        routes = dev.send_command("show ip route vrf all", use_textfsm=True)
 
-        for route in show_ip_route:
+        for route in routes:
             if 'uptime' in route.keys():
                 route.pop('uptime')
 
         dev.disconnect()
-        return show_ip_route
+        for i in self.topology['devices']:
+            if i['inventory_ip'] == device:
+                i['routes'] = routes
+                break
 
     def __discover_dynamic_routing_neighbors(self, device):
 

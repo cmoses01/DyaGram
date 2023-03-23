@@ -19,13 +19,17 @@ import logging
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-
+logging.basicConfig(format=' %(message)s')
 
 class dyagram:
 
     def __init__(self, inventory_file=None, verbose=False):
 
         self.inventory_file = inventory_file
+        self.verbose = verbose
+        self.log = None
+        self.setup_logging()
+
         self.inventory_object = self.get_inv_yaml_obj()
         self._devices_to_query = Queue()
         self._devices_queried = []
@@ -43,19 +47,26 @@ class dyagram:
 
         self._load_creds()
         self._load_inventory()
-        self.verbose = self.enable_verbose() if verbose else None
 
-    def enable_verbose(self):
-        logging.basicConfig(format=' %(message)s')
+
+
+    def setup_logging(self):
         log = logging.getLogger("DYAGRAM")
         log.setLevel(logging.INFO)
-        self.verbose = log
+        self.log = log
+        if self.verbose:
+            self.log.setLevel(logging.INFO)
+        else:
+            self.log.setLevel(logging.NOTSET)
+
 
     def get_current_site(self):
         try:
+
             file = open(r".info/info.json", 'r')
             info = json.load(file)
             #print(info['current_site'])
+            file.close()
             return info['current_site']
         except:
             print("Unable to load last site.")
@@ -86,17 +97,17 @@ class dyagram:
         """
 
         try:
-            self.log.info(f"Discovering LLDP Neighbors via RESTCONF for device: {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - START")
             resp = self._discover_lldp_neighbors_by_restconf(device)
             if not resp or resp.status_code != 200:
                 raise
-            self.log.info(f"SUCCESSFULLY Discovered LLDP Neighbors via RESTCONF for device: {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - SUCCESSFUL")
         except:
             # try ssh
-            self.log.info(f"Unable to Discover LLDP Neighbors via RESTCONF for device: {device}\nInstead, will attempt to discover via SSH")
-            self.log.info(f"Discovering LLDP Neighbors via SSH for device: {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - FAILURE")
+            self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - START")
             self._discover_lldp_neighbors_by_ssh(device)
-            self.log.info(f"SUCCESSFULLY Discovered LLDP Neighbors via SSH for device: {device}")
+            self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - SUCCESSFUL")
 
 
     def discover(self):
@@ -113,21 +124,24 @@ class dyagram:
         queue_empty = False
         while not queue_empty:
             try:
+                device = self._devices_to_query.get_nowait()
+                self.log.info(f"Pulled device {device} from Queue")
+                self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': []})
 
-               device = self._devices_to_query.get_nowait()
-               self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': []})
+                executor.submit(self.__discover_lldp_neighbors, device)
+                self.log.info(f"DEVICE: {device} - Submitted for discover_lldp_neighbors")
+                executor.submit(self.discover_routes, device)
+                self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
+                #executor.submit(self.__discover_dynamic_routing_neighbors, device)
 
-               executor.submit(self.__discover_lldp_neighbors, device)
-               executor.submit(self.discover_routes, device)
-               #executor.submit(self.__discover_dynamic_routing_neighbors, device)
-
-               self._devices_queried.append(device)
+                self._devices_queried.append(device)
 
             except queue.Empty:
+                self.log.info(f"QUEUE EMPTY")
                 queue_empty = True
             except Exception:
                 tb = self.get_traceback()
-                #print(tb)
+                self.log.info(f"EXCEPTION THROWN IN PULLING FROM QUEUE: {tb}")
 
 
         executor.shutdown(wait=True)
@@ -169,18 +183,17 @@ class dyagram:
 
     def discover_routes(self, device):
 
-
         try:
-            self.log.info(f"Discovering routes via RESTCONF for device {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - START")
             routes = self.discover_routes_restconf(device)
             if not routes or routes.status_code != 200:
                 raise
-            self.log.info(f"SUCCESSFULLY Discovered routes via RESTCONF for device {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - SUCCESSFUL")
         except:
-            self.log.info(f"Unable to Discover routes via RESTCONF for device {device}\nInstead, will now try via SSH.")
-            self.log.info(f"Discovering routes via SSH for device {device}")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - FAILURE")
+            self.log.info(f"DEVICE: {device} - SSH : Discovering routes - START")
             routes = self.discover_routes_ssh(device)
-            self.log.info(f"SUCCESSFULLY Discovered routes via SSH for device {device}")
+            self.log.info(f"DEVICE: {device} - SSH : Discovering routes - SUCCESSFUL")
 
         return True
 
@@ -442,9 +455,12 @@ class dyagram:
         session.base_url = f"https://{device}/restconf/data"
 
         #first try OpenConfig YANG
-
+        self.log.info(f"DEVICE: {device} - RESTCONF-OPENCONFIG : Querying lldp for device - START")
         oc_yang_resp = session.get(f"{session.base_url}/openconfig-lldp:lldp/interfaces/")
-        oc_yang_resp.raise_for_status()
+        if oc_yang_resp.status_code != 200:
+            self.log.info(f"DEVICE: {device} - RESTCONF-OPENCONFIG : Querying lldp for device - FAILURE")
+            oc_yang_resp.raise_for_status()
+        self.log.info(f"DEVICE: {device} - RESTCONF-OPENCONFIG : Querying lldp for device - SUCCESSFUL")
 
 
 
@@ -571,26 +587,38 @@ class dyagram:
 
         if not netmiko_session and restconf_session:
             try:
+                self.log.info(f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying for hostname - START")
                 resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-system:system/config/name")
                 if resp.status_code == 200:
+                    self.log.info(f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
                     return resp.json()['hostname']
                 if resp.status_code != 200:
-
+                    self.log.info(
+                        f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
                     # try nexus TEMPORARY
+                    self.log.info(
+                        f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
                     resp = restconf_session.get(f"{restconf_session.base_url}/Cisco-NX-OS-device:System/name")
 
                     if resp.status_code == 200:
+                        self.log.info(
+                            f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
                         return resp.json()['name']
+                    self.log.info(
+                        f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
 
             except Exception:
+
                 tb = self.get_traceback()
-                #print(tb)
+                self.log.info(
+                    f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
 
         else:
-
+            self.log.info(f"DEVICE: {netmiko_session['host']} - SSH : Querying for hostname - START")
             sh_run_output = netmiko_session.send_command("sh run | inc hostname")
             #print(sh_run_output)
             hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
+            self.log.info(f"DEVICE: {netmiko_session['host']} - SSH : Querying for hostname - SUCCESSFUL")
 
             return hostname
         return None
@@ -641,36 +669,44 @@ def main():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('first_arg', nargs='*')
+    parser.add_argument('dyagram_args', nargs='*')
 
     args = parser.parse_args()
 
-    if args.first_arg[0].lower() == "init":
+    verbose = False
+    if '-v' or '--verbose' in args.dyagram_args:
+        verbose = True
+
+
+    if args.dyagram_args[0].lower() == "init":
         from dyagram.initialize import initialize
         initialize.main()
 
-    if args.first_arg[0].lower() == "discover":
+
+
+    if args.dyagram_args[0].lower() == "discover":
         print("\n\n-- DyaGram Discovering Started --\n")
-        dy = dyagram()
+        dy = dyagram(verbose=verbose)
         dy.discover()
+
         print("\n\n-- DyaGram Discovering Completed --\n")
 
-    if args.first_arg[0].lower() == "site":
+    if args.dyagram_args[0].lower() == "site":
         from dyagram.sites.sites import sites
         s = sites()
-        if len(args.first_arg) == 1:
+        if len(args.dyagram_args) == 1:
             s.list_sites_in_cli()
-        elif len(args.first_arg) > 1:
-            if args.first_arg[1].lower() == "new":
+        elif len(args.dyagram_args) > 1:
+            if args.dyagram_args[1].lower() == "new":
                 try:
-                    s.make_new_site(args.first_arg[2])
+                    s.make_new_site(args.dyagram_args[2])
                 except Exception as e:
                     print("Missing argument : <site>")
-            if args.first_arg[1].lower() == "switch":
+            if args.dyagram_args[1].lower() == "switch":
                 try:
-                    s.switch_site(args.first_arg[2].lower())
+                    s.switch_site(args.dyagram_args[2].lower())
                 except:
-                    print(f"Site {args.first_arg[2]} doesn't exist")
+                    print(f"Site {args.dyagram_args[2]} doesn't exist")
 
 
 if __name__ == "__main__":

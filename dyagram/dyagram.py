@@ -14,6 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from urllib3.exceptions import InsecureRequestWarning
 import logging
+from tqdm import tqdm
+import warnings
+from colorama import Fore
+
+warnings.simplefilter("ignore")
 
 
 
@@ -25,6 +30,8 @@ class dyagram:
 
     def __init__(self, inventory_file=None, verbose=False):
 
+        self.pbar = None
+        self.pbar_update_int = None
         self.inventory_file = inventory_file
         self.verbose = verbose
         self.log = None
@@ -36,6 +43,7 @@ class dyagram:
         self.topology = {"devices": []}  # topology via cdp and lldp extracted data
         self.username = None
         self.password = None
+        self.changes_in_state = None
         self.site = self.get_current_site()
         self.state_exists = self.does_state_exist()
         self._neighbor_template = {
@@ -96,17 +104,20 @@ class dyagram:
         :return:
         """
 
+
         try:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - START")
             resp = self._discover_lldp_neighbors_by_restconf(device)
-            if not resp or resp.status_code != 200:
+            if not resp:
                 raise
+            self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - SUCCESSFUL")
         except:
             # try ssh
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - FAILURE")
             self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - START")
             self._discover_lldp_neighbors_by_ssh(device)
+            self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - SUCCESSFUL")
 
 
@@ -118,6 +129,11 @@ class dyagram:
 
         :return:
         """
+        print(f'Discovering site "{self.site}"')
+        self.pbar = tqdm(total=100,
+                         bar_format=Fore.LIGHTBLUE_EX + "{l_bar}{bar:20}|") if not self.verbose else tqdm(total=100,
+                                                                                                     bar_format="{l_bar}{bar}|",
+                                                                                                     disable=True)
 
         executor = ThreadPoolExecutor(max_workers=30)
 
@@ -155,6 +171,13 @@ class dyagram:
         else:
             self.compare_states()
 
+        self.pbar.close()
+        if self.changes_in_state:
+            print("\nChanges in state!")
+        else:
+            print("\nNo changes in state")
+
+
     def does_state_exist(self):
         path = Path(f"{self.site}/state.json")
         return path.is_file()
@@ -172,12 +195,9 @@ class dyagram:
         current_state = self.topology
 
         if state == current_state:
-            print("\nNo changes in state\n")
-
+            self.changes_in_state = False
         else:
-            print("\n\nCHANGES IN STATE!!")
-            print(f"\n\nSTATE FILE:\n{state}")
-            print(f"\n\nCURRENT STATE:\n{current_state}")
+            self.changes_in_state = True
         file.close()
 
 
@@ -186,13 +206,15 @@ class dyagram:
         try:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - START")
             routes = self.discover_routes_restconf(device)
-            if not routes or routes.status_code != 200:
+            if not routes:
                 raise
+            self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - SUCCESSFUL")
         except:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - FAILURE")
             self.log.info(f"DEVICE: {device} - SSH : Discovering routes - START")
             routes = self.discover_routes_ssh(device)
+            self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - SSH : Discovering routes - SUCCESSFUL")
 
         return True
@@ -299,7 +321,7 @@ class dyagram:
                 print(e)
 
     def _load_inventory(self):
-
+        self.pbar_update_int = 100 / len(self.inventory_object[self.site]) / 2 # 2 is the number of jobs each device hits CURRENTLY
         for ip in self.inventory_object[self.site]:
             self._devices_to_query.put(ip)
 
@@ -587,31 +609,36 @@ class dyagram:
 
         if not netmiko_session and restconf_session:
             try:
-                self.log.info(f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying for hostname - START")
-                resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-system:system/config/name")
+                device = re.search('\d+\.\d+\.\d+\.\d+', restconf_session.base_url).group(1)
+            except:
+                device = restconf_session.base_url
+
+            try:
+                self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying for hostname - START")
+                resp = restconf_session.get(f"{device}/openconfig-system:system/config/name")
                 if resp.status_code == 200:
-                    self.log.info(f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
+                    self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
                     return resp.json()['hostname']
                 if resp.status_code != 200:
                     self.log.info(
-                        f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
+                        f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
                     # try nexus TEMPORARY
                     self.log.info(
-                        f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
-                    resp = restconf_session.get(f"{restconf_session.base_url}/Cisco-NX-OS-device:System/name")
+                        f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
+                    resp = restconf_session.get(f"{device}/Cisco-NX-OS-device:System/name")
 
                     if resp.status_code == 200:
                         self.log.info(
-                            f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
+                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
                         return resp.json()['name']
                     self.log.info(
-                        f"DEVICE: {restconf_session.base_url} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
+                        f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
 
             except Exception:
 
                 tb = self.get_traceback()
                 self.log.info(
-                    f"DEVICE: {restconf_session.base_url} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
+                    f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
 
         else:
             self.log.info(f"DEVICE: {netmiko_session['host']} - SSH : Querying for hostname - START")
@@ -670,26 +697,19 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('dyagram_args', nargs='*')
+    parser.add_argument("-v", action='store_true', dest='verbose')
 
     args = parser.parse_args()
 
-    verbose = False
-    if '-v' or '--verbose' in args.dyagram_args:
-        verbose = True
-
-
     if args.dyagram_args[0].lower() == "init":
         from dyagram.initialize import initialize
-        initialize.main()
-
-
+        dyinit = initialize.dyagramInitialize()
+        dyinit.dy_init()
 
     if args.dyagram_args[0].lower() == "discover":
-        print("\n\n-- DyaGram Discovering Started --\n")
-        dy = dyagram(verbose=verbose)
-        dy.discover()
 
-        print("\n\n-- DyaGram Discovering Completed --\n")
+        dy = dyagram(verbose=args.verbose)
+        dy.discover()
 
     if args.dyagram_args[0].lower() == "site":
         from dyagram.sites.sites import sites

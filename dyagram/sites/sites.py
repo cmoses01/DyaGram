@@ -28,6 +28,11 @@ class sites:
             print("Unable to load last site.")
 
     def list_sites_in_cli(self):
+        """
+        cli command: dyagram site
+        :return:
+        """
+
         current_site = self.get_current_site()
         sites = self.get_sites()
         if ".info" in sites:
@@ -50,6 +55,7 @@ class sites:
                 json.dump(x,f)
         else:
             raise
+
 
 
 

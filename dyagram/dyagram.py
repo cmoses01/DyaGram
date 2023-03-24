@@ -174,7 +174,7 @@ class dyagram:
         self.pbar.close()
         if self.changes_in_state:
             print("\nChanges in state!")
-        else:
+        elif not self.changes_in_state and self.state_exists:
             print("\nNo changes in state")
 
 

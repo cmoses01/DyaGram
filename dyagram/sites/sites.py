@@ -1,10 +1,12 @@
 import os
 import json
+from colorama import Fore
 
 class sites:
 
     def __init__(self):
         self.sites = self.get_sites()
+
 
     def get_sites(self):
         return next(os.walk('.'))[1]
@@ -28,16 +30,15 @@ class sites:
     def list_sites_in_cli(self):
         current_site = self.get_current_site()
         sites = self.get_sites()
-        print("\n-- DyaGram Sites -- \n")
         if ".info" in sites:
             sites.remove(".info")
         for site in sites:
 
             if site == current_site:
-                print(f"* {site}")
+                print(Fore.LIGHTGREEN_EX + f"* {site}" + Fore.RESET)
+
             else:
                 print(f"  {site}")
-        print("\n\n")
 
     def switch_site(self, site):
         sites = self.get_sites()

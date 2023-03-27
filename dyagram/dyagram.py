@@ -46,12 +46,18 @@ class dyagram:
         self.changes_in_state = None
         self.site = self.get_current_site()
         self.state_exists = self.does_state_exist()
-        self._neighbor_template = {
+        self.lldp_neighbor_template = {
             "hostname": "",
             "local_port": "",
             "neighbor_port": "",
             "chassis_id": ""
         }
+
+        self.netmiko_args_template = {"device_type": "",
+                        "host": "",
+                        "username": self.username,
+                        "password": self.password,
+                        "secret": self.password}
 
         self._load_creds()
         self._load_inventory()
@@ -73,7 +79,6 @@ class dyagram:
 
             file = open(r".info/info.json", 'r')
             info = json.load(file)
-            #print(info['current_site'])
             file.close()
             return info['current_site']
         except:
@@ -142,13 +147,13 @@ class dyagram:
             try:
                 device = self._devices_to_query.get_nowait()
                 self.log.info(f"Pulled device {device} from Queue")
-                self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': []})
+                self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': [], 'dynamic_routing_neighbors': {}})
 
                 executor.submit(self.__discover_lldp_neighbors, device)
                 self.log.info(f"DEVICE: {device} - Submitted for discover_lldp_neighbors")
                 executor.submit(self.discover_routes, device)
                 self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
-                #executor.submit(self.__discover_dynamic_routing_neighbors, device)
+                executor.submit(self.discover_dynamic_routing_neighbors, device)
 
                 self._devices_queried.append(device)
 
@@ -277,16 +282,87 @@ class dyagram:
                 i['routes'] = routes
                 break
 
-    def __discover_dynamic_routing_neighbors(self, device):
+    def get_device_type(self, device):
 
-        self.discover_ospf_neighbors(device)
+        autodetect_netmiko_args = {"device_type": "autodetect",
+                                   "host": device,
+                                   "username": self.username,
+                                   "password": self.password}
+
+        try:
+            guesser = SSHDetect(**autodetect_netmiko_args)
+            best_match = guesser.autodetect()
+            return best_match
+
+
+        except NetmikoAuthenticationException:
+            # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
+            return None
+
+    def discover_dynamic_routing_neighbors(self, device):
 
         self.discover_eigrp_neigbors(device)
+
+        self.discover_ospf_neighbors(device)
 
         self.discover_bgp_neighbors(device)
 
     def discover_ospf_neighbors(self, device):
         pass
+
+    def discover_ospf_neighbors_ssh(self, device):
+        return None
+
+    def discover_ospf_neighbors_restconf(self):
+        return None
+
+    def discover_eigrp_neighbors(self, device):
+
+        try:
+            self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - START")
+            discovered = self.discover_eigrp_neighbors_restconf()
+
+            if not discovered:
+                self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - FAIL")
+                try:
+                    self.discover_eigrp_neighbors_ssh()
+                    self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - SUCCESS")
+                except:
+                    pass
+
+            self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - SUCCESS")
+        except:
+            pass
+
+
+    def discover_eigrp_neighbors_restconf(self):
+        return None
+
+    def discover_eigrp_neighbors_ssh(self, device):
+        os = self.get_device_type()
+        if os:
+            nm_args = self.netmiko_args_template.copy()
+            nm_args['host'] = device
+            nm_args['device_type'] = os
+
+        else:
+            raise Exception("Unable to determine OS.")
+
+        dev = ConnectHandler(**nm_args)
+        dev.enable()
+        if ['cisco_ios', 'cisco_nxos'] in os:
+            eigrp_output = dev.send_command("show ip eigrp neighbors vrf all") #textfsm not currently supported for this command
+            if isinstance(eigrp_output, str):
+                neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
+            for i in self.topology['devices']:
+                if i['inventory_ip'] == device:
+                    i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
+                    break
+        else:
+            dev.disconnect()
+            raise Exception(f"OS {os} Not supported")
+        dev.disconnect()
+
 
     def discover_eigrp_neigbors(self, device):
         pass
@@ -408,9 +484,9 @@ class dyagram:
         dev.disconnect()
         self._devices_queried.append(device)
 
-    def _create_netmiko_session(self):
+    def _create_netmiko_session(self, netmiko_kargs):
 
-        return ConnectHandler(**self.netmiko_args)
+        return ConnectHandler(**netmiko_kargs)
 
 
     def _get_chassis_ids(self, netmiko_session=None, os=None, restconf_session=None):
@@ -494,7 +570,7 @@ class dyagram:
             for intf in oc_yang_resp.json()['interfaces']['interface']:
                 if 'neighbors' in intf.keys():
 
-                    neighbor_info = self._neighbor_template.copy()
+                    neighbor_info = self.lldp_neighbor_template.copy()
                     neighbor_info['hostname'] = intf['neighbors']['neighbor'][0]['state']['system-name']
                     neighbor_info['local_port'] = intf['name']
                     neighbor_info['neighbor_port'] = intf['neighbors']['neighbor'][0]['state']['port-id']
@@ -523,7 +599,7 @@ class dyagram:
 
 
         for neighbor in lldp_neighbors_output:
-            neighbor_info = self._neighbor_template.copy()
+            neighbor_info = self.lldp_neighbor_template.copy()
             neighbor_info['hostname'] = neighbor['neighbor']
             neighbor_info['local_port'] = neighbor['local_interface']
             neighbor_info['neighbor_port'] = neighbor['neighbor_interface']

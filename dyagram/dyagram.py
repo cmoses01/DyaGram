@@ -53,14 +53,13 @@ class dyagram:
             "chassis_id": ""
         }
 
-        self.netmiko_args_template = {"device_type": "",
-                        "host": "",
-                        "username": self.username,
-                        "password": self.password,
-                        "secret": self.password}
-
         self._load_creds()
         self._load_inventory()
+        self.netmiko_args_template = {"device_type": "",
+                                      "host": "",
+                                      "username": self.username,
+                                      "password": self.password,
+                                      "secret": self.password}
 
 
 
@@ -154,6 +153,7 @@ class dyagram:
                 executor.submit(self.discover_routes, device)
                 self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
                 executor.submit(self.discover_dynamic_routing_neighbors, device)
+                self.log.info(f"DEVICE: {device} - Submitted for discover_dynamic_routing_neighbors")
 
                 self._devices_queried.append(device)
 
@@ -301,11 +301,15 @@ class dyagram:
 
     def discover_dynamic_routing_neighbors(self, device):
 
-        self.discover_eigrp_neigbors(device)
+        self.pbar.update(self.pbar_update_int)
+
+        self.discover_eigrp_neighbors(device)
 
         self.discover_ospf_neighbors(device)
 
         self.discover_bgp_neighbors(device)
+
+        self.pbar.update(self.pbar_update_int)
 
     def discover_ospf_neighbors(self, device):
         pass
@@ -319,18 +323,20 @@ class dyagram:
     def discover_eigrp_neighbors(self, device):
 
         try:
-            self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - START")
+            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering EIGRP Neighbors - START")
             discovered = self.discover_eigrp_neighbors_restconf()
 
             if not discovered:
-                self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - FAIL")
+                self.log.info(f"DEVICE: {device} - RESTCONF : Discovering EIGRP Neighbors - FAIL")
                 try:
-                    self.discover_eigrp_neighbors_ssh()
-                    self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - SUCCESS")
+                    self.log.info(f"DEVICE: {device} - SSH : Discovering EIGRP Neighbors - START")
+                    self.discover_eigrp_neighbors_ssh(device)
+                    self.log.info(f"DEVICE: {device} - SSH : Discovering EIGRP Neighbors - SUCCESS")
                 except:
-                    pass
-
-            self.log.info(f"DEVICE: {device} - RESTCONF : DISCOVERING EIGRP NEIGHBORS - SUCCESS")
+                    tb = self.get_traceback()
+                    self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN DISCOVERING EIGRP NEIGHBORS: {tb}")
+            else:
+                self.log.info(f"DEVICE: {device} - RESTCONF : Discovering EIGRP Neighbors - SUCCESS")
         except:
             pass
 
@@ -339,7 +345,7 @@ class dyagram:
         return None
 
     def discover_eigrp_neighbors_ssh(self, device):
-        os = self.get_device_type()
+        os = self.get_device_type(device)
         if os:
             nm_args = self.netmiko_args_template.copy()
             nm_args['host'] = device
@@ -348,12 +354,14 @@ class dyagram:
         else:
             raise Exception("Unable to determine OS.")
 
+
         dev = ConnectHandler(**nm_args)
         dev.enable()
-        if ['cisco_ios', 'cisco_nxos'] in os:
+        if os in ['cisco_ios', 'cisco_nxos']:
             eigrp_output = dev.send_command("show ip eigrp neighbors vrf all") #textfsm not currently supported for this command
             if isinstance(eigrp_output, str):
                 neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
+                self.log.info(f"{device}: EIGRP NEIGHBOR IPs - {neighbor_ips}")
             for i in self.topology['devices']:
                 if i['inventory_ip'] == device:
                     i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
@@ -364,8 +372,6 @@ class dyagram:
         dev.disconnect()
 
 
-    def discover_eigrp_neigbors(self, device):
-        pass
 
     def discover_bgp_neighbors(self, device):
         pass
@@ -397,7 +403,7 @@ class dyagram:
                 print(e)
 
     def _load_inventory(self):
-        self.pbar_update_int = 100 / len(self.inventory_object[self.site]) / 2 # 2 is the number of jobs each device hits CURRENTLY
+        self.pbar_update_int = 100 / len(self.inventory_object[self.site]) / 4 # CAN"T BE ODD SO GO UP ONE IF SO, 3 is the number of jobs each device hits CURRENTLY
         for ip in self.inventory_object[self.site]:
             self._devices_to_query.put(ip)
 

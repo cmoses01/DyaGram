@@ -426,6 +426,7 @@ class dyagram:
         return True
 
     def _discover_lldp_neighbors_by_ssh(self, device):
+        self.log.info(f"DEVICE: {device} - SSH : STARTING MODULE: _discover_lldp_neighbors_by_ssh")
 
         CONN_SET = False
 
@@ -433,6 +434,7 @@ class dyagram:
          "host": device,
          "username": self.username,
          "password": self.password}
+
 
         netmiko_args = {"device_type": "",
                         "host": device,
@@ -448,6 +450,9 @@ class dyagram:
            # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
             return False
         except:
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} - SSH : EXCEPTION TRYING TO AUTODISCOVER - {tb}")
+
             try:
                 if not netmiko_args['device_type']:
                     # Later put in unable to find OS
@@ -456,7 +461,8 @@ class dyagram:
                 dev.enable()
             except Exception:
                 tb = self.get_traceback()
-                #print(tb)
+                self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
+
 
             CONN_SET = True
             os = self._get_os_version(dev)
@@ -465,8 +471,10 @@ class dyagram:
         if not CONN_SET:
             dev = ConnectHandler(**netmiko_args)
 
-        dev.enable()
+        self.log.info(f"DEVICE: {device} - SSH : SETTING ENABLE")
 
+        dev.enable()
+        self.log.info(f"DEVICE: {device} - SSH : ENABLE SET")
 
         try:
             lldp_nei_json = self._get_lldp_neighbors_ssh_textfsm(dev)
@@ -478,7 +486,7 @@ class dyagram:
             lldp_nei_json = self._get_lldp_neighbors_ssh_regex(dev)
         except Exception:
             tb = self.get_traceback()
-            #print(tb)
+            self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
 
         for i in self.topology["devices"]:
             if i['inventory_ip'] == device:
@@ -723,11 +731,10 @@ class dyagram:
                     f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
 
         else:
-            self.log.info(f"DEVICE: {netmiko_session['host']} - SSH : Querying for hostname - START")
+            self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - START")
             sh_run_output = netmiko_session.send_command("sh run | inc hostname")
-            #print(sh_run_output)
             hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
-            self.log.info(f"DEVICE: {netmiko_session['host']} - SSH : Querying for hostname - SUCCESSFUL")
+            self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - SUCCESSFUL")
 
             return hostname
         return None

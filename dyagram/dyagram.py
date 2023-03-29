@@ -441,8 +441,6 @@ class dyagram:
     def _discover_lldp_neighbors_by_ssh(self, device):
         self.log.info(f"DEVICE: {device} - SSH : STARTING MODULE: _discover_lldp_neighbors_by_ssh")
 
-        CONN_SET = False
-
         autodetect_netmiko_args = {"device_type": "autodetect",
          "host": device,
          "username": self.username,
@@ -466,23 +464,23 @@ class dyagram:
             tb = self.get_traceback()
             self.log.info(f"DEVICE: {device} - SSH : EXCEPTION TRYING TO AUTODISCOVER - {tb}")
 
-            try:
-                if not netmiko_args['device_type']:
-                    # Later put in unable to find OS
-                    netmiko_args['device_type'] = "cisco_ios"
-                dev = ConnectHandler(**netmiko_args)
-                dev.enable()
-            except Exception:
-                tb = self.get_traceback()
-                self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
+            # try:
+            #     if not netmiko_args['device_type']:
+            #         # Later put in unable to find OS
+            #         netmiko_args['device_type'] = "cisco_ios"
+            #     dev = ConnectHandler(**netmiko_args)
+            #     dev.enable()
+            # except Exception:
+            #     tb = self.get_traceback()
+            #     self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
 
 
-            CONN_SET = True
-            os = self._get_os_version(dev)
-            netmiko_args['device_type'] = os
+            # CONN_SET = True
+            # os = self._get_os_version(dev)
+            # netmiko_args['device_type'] = os
 
-        if not CONN_SET:
-            dev = ConnectHandler(**netmiko_args)
+
+        dev = ConnectHandler(**netmiko_args)
 
         self.log.info(f"DEVICE: {device} - SSH : SETTING ENABLE")
 
@@ -505,7 +503,7 @@ class dyagram:
             if i['inventory_ip'] == device:
                 i['hostname'] = lldp_nei_json['hostname']
                 lldp_nei_json.pop("hostname")
-                i['layer2'].append(lldp_nei_json)
+                i['layer2'] = lldp_nei_json
                 break
 
         dev.disconnect()

@@ -59,7 +59,8 @@ class dyagram:
                                       "host": "",
                                       "username": self.username,
                                       "password": self.password,
-                                      "secret": self.password}
+                                      "secret": self.password,
+                                      "banner_timeout": 200}
 
 
 
@@ -231,7 +232,7 @@ class dyagram:
 
         return True
 
-    def discover_routes_restconf(self):
+    def discover_routes_restconf(self, device):
         return None
 
     def discover_routes_ssh(self, device):
@@ -241,25 +242,33 @@ class dyagram:
         autodetect_netmiko_args = {"device_type": "autodetect",
                                    "host": device,
                                    "username": self.username,
-                                   "password": self.password}
+                                   "password": self.password,
+                                   "banner_timeout": 200}
 
         netmiko_args = {"device_type": "",
                         "host": device,
                         "username": self.username,
                         "password": self.password,
-                        "secret": self.password}
+                        "secret": self.password,
+                        "banner_timeout": 200}
 
         try:
             guesser = SSHDetect(**autodetect_netmiko_args)
             best_match = guesser.autodetect()
             netmiko_args['device_type'] = best_match
+
             dev = ConnectHandler(**netmiko_args)
             dev.enable()
+
+
 
         except NetmikoAuthenticationException:
             # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
             return False
         except:
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} EXCEPTION02 THROWN IN discover_routes_ssh: {tb}")
+
             raise Exception("Unable to determine OS or OS Not Supported.")
         #     try:
         #         if not netmiko_args['device_type']:
@@ -300,7 +309,8 @@ class dyagram:
         autodetect_netmiko_args = {"device_type": "autodetect",
                                    "host": device,
                                    "username": self.username,
-                                   "password": self.password}
+                                   "password": self.password,
+                                   "banner_timeout": 200}
 
         try:
             guesser = SSHDetect(**autodetect_netmiko_args)

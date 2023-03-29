@@ -117,13 +117,16 @@ class dyagram:
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - SUCCESSFUL")
         except:
+            try:
             # try ssh
-            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - FAILURE")
-            self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - START")
-            self._discover_lldp_neighbors_by_ssh(device)
-            self.pbar.update(self.pbar_update_int)
-            self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - SUCCESSFUL")
-
+                self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - FAILURE")
+                self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - START")
+                self._discover_lldp_neighbors_by_ssh(device)
+                self.pbar.update(self.pbar_update_int)
+                self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - SUCCESSFUL")
+            except Exception:
+                tb = self.get_traceback()
+                self.log.info(f"DEVICE: {device} EXCEPTION01 THROWN IN __discover_lldp_neighbors : {tb}")
 
     def discover(self):
 
@@ -216,11 +219,15 @@ class dyagram:
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - SUCCESSFUL")
         except:
-            self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - FAILURE")
-            self.log.info(f"DEVICE: {device} - SSH : Discovering routes - START")
-            routes = self.discover_routes_ssh(device)
-            self.pbar.update(self.pbar_update_int)
-            self.log.info(f"DEVICE: {device} - SSH : Discovering routes - SUCCESSFUL")
+            try:
+                self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - FAILURE")
+                self.log.info(f"DEVICE: {device} - SSH : Discovering routes - START")
+                routes = self.discover_routes_ssh(device)
+                self.pbar.update(self.pbar_update_int)
+                self.log.info(f"DEVICE: {device} - SSH : Discovering routes - SUCCESSFUL")
+            except:
+                tb = self.get_traceback()
+                self.log.info(f"DEVICE: {device} EXCEPTION01 THROWN IN discover_routes : {tb}")
 
         return True
 
@@ -229,7 +236,7 @@ class dyagram:
 
     def discover_routes_ssh(self, device):
 
-        CONN_SET = False
+        # CONN_SET = False
 
         autodetect_netmiko_args = {"device_type": "autodetect",
                                    "host": device,
@@ -246,27 +253,33 @@ class dyagram:
             guesser = SSHDetect(**autodetect_netmiko_args)
             best_match = guesser.autodetect()
             netmiko_args['device_type'] = best_match
+            dev = ConnectHandler(**netmiko_args)
+            dev.enable()
 
         except NetmikoAuthenticationException:
             # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
             return False
         except:
-            try:
-                if not netmiko_args['device_type']:
-                    # Later put in unable to find OS
-                    netmiko_args['device_type'] = "cisco_ios"
-                dev = ConnectHandler(**netmiko_args)
-                dev.enable()
-            except Exception:
-                tb = self.get_traceback()
-                # print(tb)
+            raise Exception("Unable to determine OS or OS Not Supported.")
+        #     try:
+        #         if not netmiko_args['device_type']:
+        #             # Later put in unable to find OS
+        #             netmiko_args['device_type'] = "cisco_ios"
+        #         dev = ConnectHandler(**netmiko_args)
+        #         dev.enable()
+        #         CONN_SET = True
+        #     except Exception:
+        #         tb = self.get_traceback()
+        #         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
+        #
+        #         # print(tb)
+        #
+        #
+        # os = self._get_os_version(dev)
+        # netmiko_args['device_type'] = os
 
-            CONN_SET = True
-            os = self._get_os_version(dev)
-            netmiko_args['device_type'] = os
-
-        if not CONN_SET:
-            dev = ConnectHandler(**netmiko_args)
+        # if not CONN_SET:
+        #     dev = ConnectHandler(**netmiko_args)
 
         dev.enable()
 
@@ -512,6 +525,7 @@ class dyagram:
                 resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-interfaces:interfaces")
             except Exception:
                 tb = self.get_traceback()
+                self.log.info(f"DEVICE: {restconf_session.base_url} EXCEPTION01 THROWN IN _get_chassis_ids : {tb}")
                 #print(tb) LOG THIS
 
             if resp.status_code == 200:
@@ -593,6 +607,8 @@ class dyagram:
 
         except Exception:
             tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} EXCEPTION01 THROWN IN _get_lldp_neighbors_restconf : {tb}")
+
             #print(tb)
 
         if oc_yang_resp.status_code == 200:

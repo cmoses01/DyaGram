@@ -2,11 +2,13 @@ import json
 import queue
 import re
 import os
+import time
 import traceback
 from pathlib import Path
 
 from netmiko import ConnectHandler
 from netmiko import NetmikoAuthenticationException
+from netmiko.exceptions import SSHException
 from netmiko.ssh_autodetect import SSHDetect
 import requests
 import yaml
@@ -25,6 +27,9 @@ warnings.simplefilter("ignore")
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 logging.basicConfig(format=' %(message)s')
+
+
+
 
 class dyagram:
 
@@ -60,18 +65,19 @@ class dyagram:
                                       "username": self.username,
                                       "password": self.password,
                                       "secret": self.password,
+
                                       "banner_timeout": 200}
 
 
 
     def setup_logging(self):
-        log = logging.getLogger("DYAGRAM")
-        log.setLevel(logging.INFO)
+        log = logging.getLogger("")
         self.log = log
         if self.verbose:
             self.log.setLevel(logging.INFO)
         else:
-            self.log.setLevel(logging.NOTSET)
+            self.log.setLevel(logging.CRITICAL)
+
 
 
     def get_current_site(self):
@@ -109,7 +115,6 @@ class dyagram:
         :return:
         """
 
-
         try:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - START")
             resp = self._discover_lldp_neighbors_by_restconf(device)
@@ -117,6 +122,8 @@ class dyagram:
                 raise
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - SUCCESSFUL")
+        except SSHException:
+            print("CAUGHT SSH EXCEPT 02")
         except:
             try:
             # try ssh
@@ -125,7 +132,7 @@ class dyagram:
                 self._discover_lldp_neighbors_by_ssh(device)
                 self.pbar.update(self.pbar_update_int)
                 self.log.info(f"DEVICE: {device} - SSH : Discovering LLDP Neighbors - SUCCESSFUL")
-            except Exception:
+            except:
                 tb = self.get_traceback()
                 self.log.info(f"DEVICE: {device} EXCEPTION01 THROWN IN __discover_lldp_neighbors : {tb}")
 
@@ -137,54 +144,65 @@ class dyagram:
 
         :return:
         """
-        print(f'Discovering site "{self.site}"')
-        self.pbar = tqdm(total=100,
-                         bar_format=Fore.LIGHTBLUE_EX + "{l_bar}{bar:20}|") if not self.verbose else tqdm(total=100,
-                                                                                                     bar_format="{l_bar}{bar}|",
-                                                                                                     disable=True)
+        try:
+            print(f'Discovering site "{self.site}"')
+            self.pbar = tqdm(total=100,
+                             bar_format=Fore.LIGHTBLUE_EX + "{l_bar}{bar:20}|") if not self.verbose else tqdm(total=100,
+                                                                                                         bar_format="{l_bar}{bar}|",
+                                                                                                         disable=True)
 
-        executor = ThreadPoolExecutor(max_workers=30)
+            executor = ThreadPoolExecutor(max_workers=30)
 
-        queue_empty = False
-        while not queue_empty:
+            queue_empty = False
+            while not queue_empty:
+                try:
+                    device = self._devices_to_query.get_nowait()
+                    self.log.info(f"Pulled device {device} from Queue")
+                    self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': [], 'dynamic_routing_neighbors': {}})
+
+                    future_lldp = executor.submit(self.__discover_lldp_neighbors, device)
+                    self.log.info(f"DEVICE: {device} - Submitted for discover_lldp_neighbors")
+                    future_routes = executor.submit(self.discover_routes, device)
+                    self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
+                    future_routing_neighbors = executor.submit(self.discover_dynamic_routing_neighbors, device)
+                    self.log.info(f"DEVICE: {device} - Submitted for discover_dynamic_routing_neighbors")
+
+                    self._devices_queried.append(device)
+
+                except queue.Empty:
+                    self.log.info(f"QUEUE EMPTY")
+                    queue_empty = True
+                except:
+                    tb = self.get_traceback()
+                    self.log.info(f"EXCEPTION THROWN IN PULLING FROM QUEUE: {tb}")
+
+            executor.shutdown(wait=True)
+
+            #sort topology by hostname to compare to previous
+
+            self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
+
+            if not self.state_exists:
+                self.export_state()
+            else:
+                self.compare_states()
+
+            self.pbar.close()
+            if self.changes_in_state:
+                print("\nChanges in state!")
+            elif not self.changes_in_state and self.state_exists:
+                print("\nNo changes in state")
+            else:
+                print("\n")  # gives another space after progress bar in CLI
+        except SSHException:
+            print("CAUGHT SSH EXCEPT 01")
+        except:
             try:
-                device = self._devices_to_query.get_nowait()
-                self.log.info(f"Pulled device {device} from Queue")
-                self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': [], 'dynamic_routing_neighbors': {}})
-
-                executor.submit(self.__discover_lldp_neighbors, device)
-                self.log.info(f"DEVICE: {device} - Submitted for discover_lldp_neighbors")
-                executor.submit(self.discover_routes, device)
-                self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
-                executor.submit(self.discover_dynamic_routing_neighbors, device)
-                self.log.info(f"DEVICE: {device} - Submitted for discover_dynamic_routing_neighbors")
-
-                self._devices_queried.append(device)
-
-            except queue.Empty:
-                self.log.info(f"QUEUE EMPTY")
-                queue_empty = True
-            except Exception:
                 tb = self.get_traceback()
-                self.log.info(f"EXCEPTION THROWN IN PULLING FROM QUEUE: {tb}")
-
-
-        executor.shutdown(wait=True)
-
-        #sort topology by hostname to compare to previous
-
-        self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
-
-        if not self.state_exists:
-            self.export_state()
-        else:
-            self.compare_states()
-
-        self.pbar.close()
-        if self.changes_in_state:
-            print("\nChanges in state!")
-        elif not self.changes_in_state and self.state_exists:
-            print("\nNo changes in state")
+                self.log.info(f"DEVICE: {device} MAIN EXCEPTION : {tb}")
+            except:
+                tb = self.get_traceback()
+                self.log.info(f"DEVICE: UNKNOWN - MAIN EXCEPTION : {tb}")
 
 
     def does_state_exist(self):
@@ -196,6 +214,7 @@ class dyagram:
         file = open(rf"{self.site}/state.json", 'w')
         json.dump(self.topology, file)
         file.close()
+
 
     def compare_states(self):
 
@@ -219,11 +238,13 @@ class dyagram:
                 raise
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - SUCCESSFUL")
+        except SSHException:
+            print("CAUGHT SSH EXCEPT 04")
         except:
             try:
                 self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - FAILURE")
                 self.log.info(f"DEVICE: {device} - SSH : Discovering routes - START")
-                routes = self.discover_routes_ssh(device)
+                self.discover_routes_ssh(device)
                 self.pbar.update(self.pbar_update_int)
                 self.log.info(f"DEVICE: {device} - SSH : Discovering routes - SUCCESSFUL")
             except:
@@ -238,101 +259,134 @@ class dyagram:
     def discover_routes_ssh(self, device):
 
         # CONN_SET = False
-
-        autodetect_netmiko_args = {"device_type": "autodetect",
-                                   "host": device,
-                                   "username": self.username,
-                                   "password": self.password,
-                                   "banner_timeout": 200}
-
-        netmiko_args = {"device_type": "",
-                        "host": device,
-                        "username": self.username,
-                        "password": self.password,
-                        "secret": self.password,
-                        "banner_timeout": 200}
-
         try:
-            guesser = SSHDetect(**autodetect_netmiko_args)
-            best_match = guesser.autodetect()
-            netmiko_args['device_type'] = best_match
+            self.log.info(f"DEVICE: {device} - SSH : GETTING DEVICE TYPE : discover_routes_ssh")
+            os = self.get_device_type(device)
+            self.log.info(f"DEVICE: {device} - SSH : GOT DEVICE TYPE : discover_routes_ssh")
 
+            netmiko_args = {"device_type": os,
+                            "host": device,
+                            "username": self.username,
+                            "password": self.password,
+                            "secret": self.password,
+                            "banner_timeout": 200
+                            }
+            # autodetect_tries = 0
+            # while autodetect_tries < 10:
+            #     try:
+            #         guesser = SSHDetect(**autodetect_netmiko_args)
+            #         best_match = guesser.autodetect()
+            #         netmiko_args['device_type'] = best_match
+            #
+            #         dev = ConnectHandler(**netmiko_args)
+            #         dev.enable()
+            #
+            #
+            #
+            #     except NetmikoAuthenticationException:
+            #         # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
+            #         return False
+            #     except:
+            #         autodetect_tries += 1
+            #         time.sleep(5)
+            #         tb = self.get_traceback()
+            #         self.log.info(f"DEVICE: {device} EXCEPTION02 THROWN IN discover_routes_ssh: {tb}")
+
+                # raise Exception("Unable to determine OS or OS Not Supported.")
+            #     try:
+            #         if not netmiko_args['device_type']:
+            #             # Later put in unable to find OS
+            #             netmiko_args['device_type'] = "cisco_ios"
+            #         dev = ConnectHandler(**netmiko_args)
+            #         dev.enable()
+            #         CONN_SET = True
+            #     except Exception:
+            #         tb = self.get_traceback()
+            #         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
+            #
+            #         # print(tb)
+            #
+            #
+            # os = self._get_os_version(dev)
+            # netmiko_args['device_type'] = os
+
+            # if not CONN_SET:
+            #     dev = ConnectHandler(**netmiko_args)
+            self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : discover_routes_ssh")
             dev = ConnectHandler(**netmiko_args)
+            self.log.info(f"DEVICE: {device} - SSH : CREATED NETMIKO OBJ : discover_routes_ssh")
             dev.enable()
 
+            routes = dev.send_command("show ip route vrf all", use_textfsm=True)
 
+            for route in routes:
+                if 'uptime' in route.keys():
+                    route.pop('uptime')
 
-        except NetmikoAuthenticationException:
-            # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
-            return False
+            dev.disconnect()
+            for i in self.topology['devices']:
+                if i['inventory_ip'] == device:
+                    i['routes'] = routes
+                    break
         except:
             tb = self.get_traceback()
-            self.log.info(f"DEVICE: {device} EXCEPTION02 THROWN IN discover_routes_ssh: {tb}")
+            self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
 
-            raise Exception("Unable to determine OS or OS Not Supported.")
-        #     try:
-        #         if not netmiko_args['device_type']:
-        #             # Later put in unable to find OS
-        #             netmiko_args['device_type'] = "cisco_ios"
-        #         dev = ConnectHandler(**netmiko_args)
-        #         dev.enable()
-        #         CONN_SET = True
-        #     except Exception:
-        #         tb = self.get_traceback()
-        #         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
-        #
-        #         # print(tb)
-        #
-        #
-        # os = self._get_os_version(dev)
-        # netmiko_args['device_type'] = os
-
-        # if not CONN_SET:
-        #     dev = ConnectHandler(**netmiko_args)
-
-        dev.enable()
-
-        routes = dev.send_command("show ip route vrf all", use_textfsm=True)
-
-        for route in routes:
-            if 'uptime' in route.keys():
-                route.pop('uptime')
-
-        dev.disconnect()
-        for i in self.topology['devices']:
-            if i['inventory_ip'] == device:
-                i['routes'] = routes
-                break
 
     def get_device_type(self, device):
 
-        autodetect_netmiko_args = {"device_type": "autodetect",
-                                   "host": device,
-                                   "username": self.username,
-                                   "password": self.password,
-                                   "banner_timeout": 200}
-
         try:
-            guesser = SSHDetect(**autodetect_netmiko_args)
-            best_match = guesser.autodetect()
-            return best_match
+
+            autodetect_netmiko_args = {"device_type": "autodetect",
+                                       "host": device,
+                                       "username": self.username,
+                                       "password": self.password,
+                                       "banner_timeout": 30}
+            autodetect_tries = 0
+            while autodetect_tries < 10:
+                try:
+                    guesser = SSHDetect(**autodetect_netmiko_args)
+                    best_match = guesser.autodetect()
 
 
-        except NetmikoAuthenticationException:
-            # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
-            return None
+                    return best_match
+
+
+                except NetmikoAuthenticationException:
+                    # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
+                    return None
+
+                except:
+                    if autodetect_tries > 10:
+                        tb = self.get_traceback()
+                        self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN GET_DEVICE_TYPE: {tb}")
+                        raise Exception("Unable to access device")
+                    autodetect_tries += 1
+                    time.sleep(5)
+        except:
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN get_device_type: {tb}")
+
+
 
     def discover_dynamic_routing_neighbors(self, device):
 
-        self.pbar.update(self.pbar_update_int)
+        try:
 
-        self.discover_eigrp_neighbors(device)
+            self.pbar.update(self.pbar_update_int)
 
-        self.discover_ospf_neighbors(device)
+            self.discover_eigrp_neighbors(device)
 
-        self.discover_bgp_neighbors(device)
+            # self.discover_ospf_neighbors(device)
+            #
+            # self.discover_bgp_neighbors(device)
 
-        self.pbar.update(self.pbar_update_int)
+            self.pbar.update(self.pbar_update_int)
+        except SSHException:
+            print("CAUGHT SSH EXCEPT 03")
+        except:
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_dynamic_routing_neighbors: {tb}")
 
     def discover_ospf_neighbors(self, device):
         pass
@@ -347,6 +401,7 @@ class dyagram:
 
         try:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering EIGRP Neighbors - START")
+            #time.sleep(5)  # FIXME: IF I DON'T PUT THIS HERE THERE IS AN EXCEPTION THROWN THAT I CAN'T CATCH
             discovered = self.discover_eigrp_neighbors_restconf()
 
             if not discovered:
@@ -361,38 +416,61 @@ class dyagram:
             else:
                 self.log.info(f"DEVICE: {device} - RESTCONF : Discovering EIGRP Neighbors - SUCCESS")
         except:
-            pass
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} - SSH : ERROR discover_eigrp_neighbors - {tb}")
 
 
     def discover_eigrp_neighbors_restconf(self):
         return None
 
     def discover_eigrp_neighbors_ssh(self, device):
-        os = self.get_device_type(device)
-        if os:
-            nm_args = self.netmiko_args_template.copy()
-            nm_args['host'] = device
-            nm_args['device_type'] = os
 
-        else:
-            raise Exception("Unable to determine OS.")
+        try:
+            self.log.info("GETTING DEVICE TYPE IN EIGRP NEIGHBORS SSH")
+            os = self.get_device_type(device)
+            self.log.info("GOT DEVICE TYPE  FROM get_device_type func IN EIGRP NEIGHBORS SSH_top")
+            if os:
+                self.log.info("GOT DEVICE TYPE  FROM get_device_type func IN EIGRP NEIGHBORS SSH")
+                nm_args = self.netmiko_args_template.copy()
+                nm_args['host'] = device
+                nm_args['device_type'] = os
 
 
-        dev = ConnectHandler(**nm_args)
-        dev.enable()
-        if os in ['cisco_ios', 'cisco_nxos']:
-            eigrp_output = dev.send_command("show ip eigrp neighbors vrf all") #textfsm not currently supported for this command
-            if isinstance(eigrp_output, str):
-                neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
-                self.log.info(f"{device}: EIGRP NEIGHBOR IPs - {neighbor_ips}")
-            for i in self.topology['devices']:
-                if i['inventory_ip'] == device:
-                    i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
-                    break
-        else:
+            else:
+                os = "cisco_ios"
+                nm_args = self.netmiko_args_template.copy()
+                nm_args['host'] = device
+                nm_args['device_type'] = os
+                #raise Exception("Unable to determine OS.")
+                self.log.info("GOT DEVICE TYPE IN EIGRP NEIGHBORS SSH")
+
+            self.log.info("CREATING NETMIKO OBJ : discover_eigrp_neighbors_ssh")
+            dev = ConnectHandler(**nm_args)
+            self.log.info("CREATED NETMIKO OBJ : discover_eigrp_neighbors_ssh")
+
+            dev.enable()
+
+
+            if os in ['cisco_ios', 'cisco_nxos']:
+                eigrp_output = dev.send_command("show ip eigrp neighbors vrf all") #textfsm not currently supported for this command
+            elif os in ['cisco_xr']:
+                eigrp_output = dev.send_command(
+                    "show eigrp neighbors")  # textfsm not currently supported for this command
+                if isinstance(eigrp_output, str):
+                    neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
+                    self.log.info(f"{device}: EIGRP NEIGHBOR IPs - {neighbor_ips}")
+                for i in self.topology['devices']:
+                    if i['inventory_ip'] == device:
+                        i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
+                        break
+            else:
+                dev.disconnect()
+                raise Exception(f"OS {os} Not supported")
             dev.disconnect()
-            raise Exception(f"OS {os} Not supported")
-        dev.disconnect()
+        except:
+            self.log.info("HIT EXCEPT discover_eigrp_neighbors_ssh")
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} - SSH : discover_eigrp_neighbors_ssh - {tb}")
 
 
 
@@ -423,7 +501,7 @@ class dyagram:
                 return inventory_object
 
             except yaml.YAMLError as e:
-                print(e)
+                print(f"YAML ERROR: {e}")
 
     def _load_inventory(self):
         self.pbar_update_int = 100 / len(self.inventory_object[self.site]) / 4 # CAN"T BE ODD SO GO UP ONE IF SO, 3 is the number of jobs each device hits CURRENTLY
@@ -449,75 +527,70 @@ class dyagram:
         return True
 
     def _discover_lldp_neighbors_by_ssh(self, device):
-        self.log.info(f"DEVICE: {device} - SSH : STARTING MODULE: _discover_lldp_neighbors_by_ssh")
 
-        autodetect_netmiko_args = {"device_type": "autodetect",
-         "host": device,
-         "username": self.username,
-         "password": self.password}
-
-
-        netmiko_args = {"device_type": "",
-                        "host": device,
-                        "username": self.username,
-                        "password": self.password,
-                        "secret": self.password}
         try:
-            guesser = SSHDetect(**autodetect_netmiko_args)
-            best_match = guesser.autodetect()
-            netmiko_args['device_type'] = best_match
+            self.log.info(f"DEVICE: {device} - SSH : GETTING DEVICE TYPE : _discover_lldp_neighbors_by_ssh")
+            os = self.get_device_type(device)
+            self.log.info(f"DEVICE: {device} - SSH : GOT DEVICE TYPE : _discover_lldp_neighbors_by_ssh")
+            netmiko_args = {"device_type": os,
+                            "host": device,
+                            "username": self.username,
+                            "password": self.password,
+                            "secret": self.password,
+                            }
 
-        except NetmikoAuthenticationException:
-           # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
-            return False
+
+                # try:
+                #     if not netmiko_args['device_type']:
+                #         # Later put in unable to find OS
+                #         netmiko_args['device_type'] = "cisco_ios"
+                #     dev = ConnectHandler(**netmiko_args)
+                #     dev.enable()
+                # except Exception:
+                #     tb = self.get_traceback()
+                #     self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
+
+
+                # CONN_SET = True
+                # os = self._get_os_version(dev)
+                # netmiko_args['device_type'] = os
+
+            self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : _discover_lldp_neighbors_by_ssh")
+            dev = ConnectHandler(**netmiko_args)
+            self.log.info(f"DEVICE: {device} - SSH : CREATED NETMIKO OBJ : _discover_lldp_neighbors_by_ssh")
+            self.log.info(f"DEVICE: {device} - SSH : SETTING ENABLE")
+
+            dev.enable()
+            self.log.info(f"DEVICE: {device} - SSH : ENABLE SET")
+
+            try:
+                lldp_nei_json = self._get_lldp_neighbors_ssh_textfsm(dev)
+
+                if type(lldp_nei_json) == str:
+                    raise ValueError("LLDP NEIGHBORS ARE STRs. Try without textfsm")
+            except ValueError as e:
+                try:
+                    lldp_nei_json = self._get_lldp_neighbors_ssh_regex(dev)
+                except:
+                    tb = self.get_traceback()
+                    self.log.info(f"DEVICE: {device} EXCEPTION22 IN _discover_lldp_neighbors_by_ssh: {tb}")
+            except:
+                tb = self.get_traceback()
+                self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
+
+            for i in self.topology["devices"]:
+                if i['inventory_ip'] == device:
+                    i['hostname'] = lldp_nei_json['hostname']
+                    lldp_nei_json.pop("hostname")
+                    i['layer2'] = lldp_nei_json
+                    break
+
+            dev.disconnect()
+            self._devices_queried.append(device)
         except:
             tb = self.get_traceback()
-            self.log.info(f"DEVICE: {device} - SSH : EXCEPTION TRYING TO AUTODISCOVER - {tb}")
+            self.log.info(f"EXCEPTION01 THROWN IN _discover_lldp_neighbors_by_ssh : {tb}")
 
-            # try:
-            #     if not netmiko_args['device_type']:
-            #         # Later put in unable to find OS
-            #         netmiko_args['device_type'] = "cisco_ios"
-            #     dev = ConnectHandler(**netmiko_args)
-            #     dev.enable()
-            # except Exception:
-            #     tb = self.get_traceback()
-            #     self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
-
-
-            # CONN_SET = True
-            # os = self._get_os_version(dev)
-            # netmiko_args['device_type'] = os
-
-
-        dev = ConnectHandler(**netmiko_args)
-
-        self.log.info(f"DEVICE: {device} - SSH : SETTING ENABLE")
-
-        dev.enable()
-        self.log.info(f"DEVICE: {device} - SSH : ENABLE SET")
-
-        try:
-            lldp_nei_json = self._get_lldp_neighbors_ssh_textfsm(dev)
-
-            if type(lldp_nei_json) == str:
-                raise ValueError("LLDP NEIGHBORS ARE STRs. Try without textfsm")
-        except ValueError as e:
-            #print(e)
-            lldp_nei_json = self._get_lldp_neighbors_ssh_regex(dev)
-        except Exception:
-            tb = self.get_traceback()
-            self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
-
-        for i in self.topology["devices"]:
-            if i['inventory_ip'] == device:
-                i['hostname'] = lldp_nei_json['hostname']
-                lldp_nei_json.pop("hostname")
-                i['layer2'] = lldp_nei_json
-                break
-
-        dev.disconnect()
-        self._devices_queried.append(device)
 
     def _create_netmiko_session(self, netmiko_kargs):
 
@@ -531,7 +604,7 @@ class dyagram:
 
             try:
                 resp = restconf_session.get(f"{restconf_session.base_url}/openconfig-interfaces:interfaces")
-            except Exception:
+            except:
                 tb = self.get_traceback()
                 self.log.info(f"DEVICE: {restconf_session.base_url} EXCEPTION01 THROWN IN _get_chassis_ids : {tb}")
                 #print(tb) LOG THIS
@@ -613,7 +686,7 @@ class dyagram:
                     neighbor_info['chassis_id'] = intf['neighbors']['neighbor'][0]['state']['chassis-id']
                     lldp_info_json['neighbors'].append(neighbor_info)
 
-        except Exception:
+        except:
             tb = self.get_traceback()
             self.log.info(f"DEVICE: {device} EXCEPTION01 THROWN IN _get_lldp_neighbors_restconf : {tb}")
 
@@ -720,48 +793,52 @@ class dyagram:
 
     def _get_hostname(self, netmiko_session=None, restconf_session=None):
 
+        try:
+            if not netmiko_session and restconf_session:
+                try:
+                    device = re.search('\d+\.\d+\.\d+\.\d+', restconf_session.base_url).group(1)
+                except:
+                    device = restconf_session.base_url
 
-        if not netmiko_session and restconf_session:
-            try:
-                device = re.search('\d+\.\d+\.\d+\.\d+', restconf_session.base_url).group(1)
-            except:
-                device = restconf_session.base_url
-
-            try:
-                self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying for hostname - START")
-                resp = restconf_session.get(f"{device}/openconfig-system:system/config/name")
-                if resp.status_code == 200:
-                    self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
-                    return resp.json()['hostname']
-                if resp.status_code != 200:
-                    self.log.info(
-                        f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
-                    # try nexus TEMPORARY
-                    self.log.info(
-                        f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
-                    resp = restconf_session.get(f"{device}/Cisco-NX-OS-device:System/name")
-
+                try:
+                    self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying for hostname - START")
+                    resp = restconf_session.get(f"{device}/openconfig-system:system/config/name")
                     if resp.status_code == 200:
+                        self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
+                        return resp.json()['hostname']
+                    if resp.status_code != 200:
                         self.log.info(
-                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
-                        return resp.json()['name']
+                            f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
+                        # try nexus TEMPORARY
+                        self.log.info(
+                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
+                        resp = restconf_session.get(f"{device}/Cisco-NX-OS-device:System/name")
+
+                        if resp.status_code == 200:
+                            self.log.info(
+                                f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
+                            return resp.json()['name']
+                        self.log.info(
+                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
+
+                except:
+
+                    tb = self.get_traceback()
                     self.log.info(
-                        f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
+                        f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
 
-            except Exception:
+            else:
+                self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - START")
+                sh_run_output = netmiko_session.send_command("sh run | inc hostname")
+                hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
+                self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - SUCCESSFUL")
 
-                tb = self.get_traceback()
-                self.log.info(
-                    f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
+                return hostname
+            return None
+        except:
+            tb = self.get_traceback()
+            self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN _get_hostname : {tb}")
 
-        else:
-            self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - START")
-            sh_run_output = netmiko_session.send_command("sh run | inc hostname")
-            hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
-            self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - SUCCESSFUL")
-
-            return hostname
-        return None
 
     def _get_os_version(self, netmiko_session):
 
@@ -806,41 +883,48 @@ class dyagram:
 def main():
 
     import argparse
+    try:
+        parser = argparse.ArgumentParser()
 
-    parser = argparse.ArgumentParser()
+        parser.add_argument('dyagram_args', nargs='*')
+        parser.add_argument("-v", action='store_true', dest='verbose')
 
-    parser.add_argument('dyagram_args', nargs='*')
-    parser.add_argument("-v", action='store_true', dest='verbose')
+        args = parser.parse_args()
 
-    args = parser.parse_args()
+        if args.dyagram_args[0].lower() == "init":
+            from dyagram.initialize import initialize
+            dyinit = initialize.dyagramInitialize()
+            dyinit.dy_init()
 
-    if args.dyagram_args[0].lower() == "init":
-        from dyagram.initialize import initialize
-        dyinit = initialize.dyagramInitialize()
-        dyinit.dy_init()
+        if args.dyagram_args[0].lower() == "discover":
+            try:
+                dy = dyagram(verbose=args.verbose)
+                dy.discover()
+            except:
+                tb = dyagram.get_traceback()
+                print(f"DEVICE: MAIN EXCEPTION : {tb}")
 
-    if args.dyagram_args[0].lower() == "discover":
-
-        dy = dyagram(verbose=args.verbose)
-        dy.discover()
-
-    if args.dyagram_args[0].lower() == "site":
-        from dyagram.sites.sites import sites
-        s = sites()
-        if len(args.dyagram_args) == 1:
-            s.list_sites_in_cli()
-        elif len(args.dyagram_args) > 1:
-            if args.dyagram_args[1].lower() == "new":
-                try:
-                    s.make_new_site(args.dyagram_args[2])
-                except Exception as e:
-                    print("Missing argument : <site>")
-            if args.dyagram_args[1].lower() == "switch":
-                try:
-                    s.switch_site(args.dyagram_args[2].lower())
-                except:
-                    print(f"Site {args.dyagram_args[2]} doesn't exist")
+        if args.dyagram_args[0].lower() == "site":
+            from dyagram.sites.sites import sites
+            s = sites()
+            if len(args.dyagram_args) == 1:
+                s.list_sites_in_cli()
+            elif len(args.dyagram_args) > 1:
+                if args.dyagram_args[1].lower() == "new":
+                    try:
+                        s.make_new_site(args.dyagram_args[2])
+                    except:
+                        print("Missing argument : <site>")
+                if args.dyagram_args[1].lower() == "switch":
+                    try:
+                        s.switch_site(args.dyagram_args[2].lower())
+                    except:
+                        print(f"Site {args.dyagram_args[2]} doesn't exist")
+    except:
+        tb = dyagram.get_traceback()
+        print(f"DEVICE: MAIN EXCEPTION : {tb}")
 
 
 if __name__ == "__main__":
     main()
+

@@ -19,6 +19,7 @@ import logging
 from tqdm import tqdm
 import warnings
 from colorama import Fore
+from deepdiff import DeepDiff
 
 warnings.simplefilter("ignore")
 
@@ -190,6 +191,21 @@ class dyagram:
             self.pbar.close()
             if self.changes_in_state:
                 print("\nChanges in state!")
+                file = open(rf"{self.site}/state.json", 'r')
+                state = json.load(file)
+                diffs = self.get_state_diff(state, self.topology) # state is the state file on record and topology is current state
+                # print to screen the diffs
+                print("DIFFS\n")
+                for ip in diffs:
+                    print(f"{ip}\n")
+                    for i in diffs[ip]['added']:
+                        print(Fore.LIGHTGREEN_EX + f"     +{i}")
+                    print("\n")
+                    for i in diffs[ip]['removed']:
+                        print(Fore.RED + f"     -{i}")
+                    print("\n")
+                    for i in diffs[ip]['changed']:
+                        print(Fore.LIGHTYELLOW_EX + f"     ~{i}")
             elif not self.changes_in_state and self.state_exists:
                 print("\nNo changes in state")
             else:
@@ -332,6 +348,70 @@ class dyagram:
             tb = self.get_traceback()
             self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
 
+    @staticmethod
+    def get_state_diff(previous_state, current_state):
+
+        device_diffs = {}
+
+        diff_resp = DeepDiff(previous_state, current_state)
+        print(diff_resp)
+
+        if not diff_resp:
+            return None
+
+        diff_type = None
+        for k in diff_resp.keys():
+            if "added" in k:
+                diff_type = "added"
+                s = current_state
+            elif "removed" in k:
+                diff_type = "removed"
+                s = previous_state
+            elif "changed" in k:
+                s = current_state
+                diff_type = "changed"
+
+            for diff in diff_resp[k]:
+
+                resp = re.search("root\['devices'\]\[(\d+)\]\[([^\]]*)\]", diff)
+                device_elem = int(resp.group(1))
+                category = resp.group(2).replace("'", "").replace('"', '')
+                if s['devices'][device_elem]['inventory_ip'] not in device_diffs.keys():
+                    device_diffs[s['devices'][device_elem]['inventory_ip']] = {"added": [], "removed": [],
+                                                                               "changed": []}
+
+                if category == "dynamic_routing_neighbors":
+                    if 'eigrp' in diff:
+                        routing_protocol = "EIGRP"
+
+
+                    elif 'ospf' in diff:
+                        routing_protocol = "OSPF"
+                    elif 'bgp' in diff:
+                        routing_protocol = "BGP"
+
+                    if diff_type != "changed":
+                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                            f"{routing_protocol} Neighbor {diff_resp[k][diff]}")
+                    else:
+                        device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                            f"{routing_protocol} Neighbor {diff_resp[k][diff]['old_value']}")
+                        device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+                            f"{routing_protocol} Neighbor {diff_resp[k][diff]['new_value']}")
+
+                if category == "layer2":
+                    if diff_type != "changed":
+                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                            f"LLDP Neighbor {diff_resp[k][diff]['hostname']} (Chassis ID: {diff_resp[k][diff]['chassis_id']})")
+                    else:
+                        resp = re.search("\['neighbors'\]\[(\d+)\]\['(.*)'\]", diff)
+                        neigh_elem = int(resp.group(1))
+                        neigh_property = resp.group(2)
+                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                            f"LLDP Neighbor {s['devices'][device_elem][category]['neighbors'][neigh_elem]['hostname']}: {neigh_property}: "
+                            f"NEW VALUE: {diff_resp[k][diff]['new_value']}, OLD VALUE: {diff_resp[k][diff]['old_value']}")
+
+        return device_diffs
 
     def get_device_type(self, device):
 
@@ -897,12 +977,9 @@ def main():
             dyinit.dy_init()
 
         if args.dyagram_args[0].lower() == "discover":
-            try:
-                dy = dyagram(verbose=args.verbose)
-                dy.discover()
-            except:
-                tb = dyagram.get_traceback()
-                print(f"DEVICE: MAIN EXCEPTION : {tb}")
+            dy = dyagram(verbose=args.verbose)
+            dy.discover()
+
 
         if args.dyagram_args[0].lower() == "site":
             from dyagram.sites.sites import sites

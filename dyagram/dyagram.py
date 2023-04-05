@@ -190,7 +190,7 @@ class dyagram:
 
             self.pbar.close()
             if self.changes_in_state:
-                print("\nChanges in state!")
+                print("\nChanges in state!\n")
                 file = open(rf"{self.site}/state.json", 'r')
                 state = json.load(file)
                 diffs = self.get_state_diff(state, self.topology) # state is the state file on record and topology is current state
@@ -199,13 +199,12 @@ class dyagram:
                 for ip in diffs:
                     print(f"{ip}\n")
                     for i in diffs[ip]['added']:
-                        print(Fore.LIGHTGREEN_EX + f"     +{i}")
-                    print("\n")
+                        print(Fore.LIGHTGREEN_EX + f"  + {i}")
                     for i in diffs[ip]['removed']:
-                        print(Fore.RED + f"     -{i}")
-                    print("\n")
+                        print(Fore.RED + f"  - {i}")
                     for i in diffs[ip]['changed']:
-                        print(Fore.LIGHTYELLOW_EX + f"     ~{i}")
+                        print(Fore.YELLOW + f"  ~ {i}")
+                    print("\n\n")
             elif not self.changes_in_state and self.state_exists:
                 print("\nNo changes in state")
             else:
@@ -353,8 +352,7 @@ class dyagram:
 
         device_diffs = {}
 
-        diff_resp = DeepDiff(previous_state, current_state)
-        print(diff_resp)
+        diff_resp = DeepDiff(previous_state, current_state, ignore_order=True)
 
         if not diff_resp:
             return None

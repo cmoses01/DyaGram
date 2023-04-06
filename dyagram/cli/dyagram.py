@@ -21,6 +21,9 @@ import warnings
 from colorama import Fore
 from deepdiff import DeepDiff
 
+from dyagram.cli import sites
+from dyagram.cli import export
+
 warnings.simplefilter("ignore")
 
 
@@ -1048,9 +1051,13 @@ def main():
             dy = dyagram(verbose=args.verbose)
             dy.discover()
 
+        if args.dyagram_args[0].lower() == "export":
+            dy = export.DiagramExport()
+            dy.export()
+
 
         if args.dyagram_args[0].lower() == "site":
-            from dyagram.cli import sites
+
             s = sites()
             if len(args.dyagram_args) == 1:
                 s.list_sites_in_cli()

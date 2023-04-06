@@ -2,10 +2,14 @@ import os
 import time
 from pathlib import Path
 import yaml
+from colorama import Fore
+from tqdm import tqdm
 
 class dyagramInitialize:
 
-    def __init__(self, site):
+    def __init__(self, site=None):
+        self.pbar = None
+        self.pbar_update_int = None
         self.clean = None
         self.has_init_been_ran()
         if not self.clean:
@@ -34,6 +38,7 @@ class dyagramInitialize:
                 print(e)
         for site in inventory_object:
             sites.append(site)
+        self.pbar_update_int = 100 / len(inventory_object)
         return sites
 
 
@@ -44,7 +49,7 @@ class dyagramInitialize:
             sites = self.get_sites_from_inventory()
             for site in sites:
                 os.mkdir(site)
-                print(f'Created site: {site}')
+                self.pbar.update(self.pbar_update_int)
             self.site = sites[0]
         else:
             self.site = input("Site Name: ")
@@ -57,15 +62,17 @@ class dyagramInitialize:
             x = {"current_site": self.site}
             json.dump(x,f)
 
+    def dy_init(self):
+        # function called when command dyagram init is called
+        print('DyaGram initializing')
+        self.pbar = tqdm(total=100,
+                         bar_format=Fore.LIGHTBLUE_EX + "{l_bar}{bar:20}|")
+        try:
+            self.make_dyagram_folder_structure()
+        except Exception as e:
+            print(e)
 
-def main(site=None):
-    print("\n\n-- DyaGram Initializing --\n")
-    try:
-        dyinit = dyagramInitialize(site)
-        dyinit.make_dyagram_folder_structure()
-    except Exception as e:
-        print(e)
-    time.sleep(1)
-    print("\n-- DyaGram Initialized --\n")
+        self.pbar.close()
+
 
 

@@ -9,7 +9,7 @@ class sites:
 
 
     def get_sites(self):
-        return next(os.walk('.'))[1]
+        return next(os.walk(''))[1]
 
     def make_new_site(self, name):
         if name in self.sites:
@@ -18,8 +18,8 @@ class sites:
             os.mkdir(f'{name}')
             print(f'Site "{name}" created!')
 
-
-    def get_current_site(self):
+    @staticmethod
+    def get_current_site():
         try:
             file = open(r".info/info.json", 'r')
             info = json.load(file)

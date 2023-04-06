@@ -1040,7 +1040,7 @@ def main():
         args = parser.parse_args()
 
         if args.dyagram_args[0].lower() == "init":
-            from dyagram.initialize import initialize
+            from dyagram.cli import initialize
             dyinit = initialize.dyagramInitialize()
             dyinit.dy_init()
 
@@ -1050,7 +1050,7 @@ def main():
 
 
         if args.dyagram_args[0].lower() == "site":
-            from dyagram.sites.sites import sites
+            from dyagram.cli import sites
             s = sites()
             if len(args.dyagram_args) == 1:
                 s.list_sites_in_cli()

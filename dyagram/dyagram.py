@@ -193,17 +193,21 @@ class dyagram:
                 print("\nChanges in state!\n")
                 file = open(rf"{self.site}/state.json", 'r')
                 state = json.load(file)
-                diffs = self.get_state_diff(state, self.topology) # state is the state file on record and topology is current state
+                try:
+                    diffs = self.get_state_diff(state, self.topology) # state is the state file on record and topology is current state
+                except Exception:
+                    tb = self.get_traceback()
+                    self.log.info(f"EXCEPTION THROWN GETTING DIFFS: {tb}")
                 # print to screen the diffs
                 print("DIFFS\n")
                 for ip in diffs:
                     print(f"{ip}\n")
                     for i in diffs[ip]['added']:
-                        print(Fore.LIGHTGREEN_EX + f"  + {i}")
+                        print(Fore.LIGHTGREEN_EX + f"  + {i}" + Fore.RESET)
                     for i in diffs[ip]['removed']:
-                        print(Fore.RED + f"  - {i}")
+                        print(Fore.RED + f"  - {i}"+ Fore.RESET)
                     for i in diffs[ip]['changed']:
-                        print(Fore.YELLOW + f"  ~ {i}")
+                        print(Fore.YELLOW + f"  ~ {i}"+ Fore.RESET)
                     print("\n\n")
             elif not self.changes_in_state and self.state_exists:
                 print("\nNo changes in state")
@@ -332,11 +336,16 @@ class dyagram:
             self.log.info(f"DEVICE: {device} - SSH : CREATED NETMIKO OBJ : discover_routes_ssh")
             dev.enable()
 
-            routes = dev.send_command("show ip route vrf all", use_textfsm=True)
-
-            for route in routes:
+            routes_w_vrf = dev.send_command("show ip route vrf all", use_textfsm=True)
+            routes_wo_vrf = dev.send_command("show ip route", use_textfsm=True)
+            for route in routes_w_vrf:
                 if 'uptime' in route.keys():
                     route.pop('uptime')
+            for route in routes_wo_vrf:
+                if 'uptime' in route.keys():
+                    route.pop('uptime')
+            combined_routes = routes_wo_vrf + routes_w_vrf
+            routes = [i for n, i in enumerate(combined_routes) if i not in combined_routes[n + 1:]]
 
             dev.disconnect()
             for i in self.topology['devices']:
@@ -351,6 +360,10 @@ class dyagram:
     def get_state_diff(previous_state, current_state):
 
         device_diffs = {}
+
+        elem_changed = {
+            "routes": []}  # this keeps up with "changes" when converting to removed/add for routes,
+                           # this is due to deeper dictionary items
 
         diff_resp = DeepDiff(previous_state, current_state, ignore_order=True)
 
@@ -378,11 +391,10 @@ class dyagram:
                     device_diffs[s['devices'][device_elem]['inventory_ip']] = {"added": [], "removed": [],
                                                                                "changed": []}
 
+
                 if category == "dynamic_routing_neighbors":
                     if 'eigrp' in diff:
                         routing_protocol = "EIGRP"
-
-
                     elif 'ospf' in diff:
                         routing_protocol = "OSPF"
                     elif 'bgp' in diff:
@@ -397,10 +409,11 @@ class dyagram:
                         device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
                             f"{routing_protocol} Neighbor {diff_resp[k][diff]['new_value']}")
 
-                if category == "layer2":
+                elif category == "layer2":
                     if diff_type != "changed":
                         device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
                             f"LLDP Neighbor {diff_resp[k][diff]['hostname']} (Chassis ID: {diff_resp[k][diff]['chassis_id']})")
+
                     else:
                         resp = re.search("\['neighbors'\]\[(\d+)\]\['(.*)'\]", diff)
                         neigh_elem = int(resp.group(1))
@@ -408,6 +421,61 @@ class dyagram:
                         device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
                             f"LLDP Neighbor {s['devices'][device_elem][category]['neighbors'][neigh_elem]['hostname']}: {neigh_property}: "
                             f"NEW VALUE: {diff_resp[k][diff]['new_value']}, OLD VALUE: {diff_resp[k][diff]['old_value']}")
+                elif category == "routes":
+
+                    if diff_type != "changed":
+
+                        try:
+                            device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+
+                                f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['next_hop']}")
+                        except KeyError:
+                            # different return for next hop for XR
+                            device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+
+                                f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['nexthop_ip']}")
+                    else:
+
+                        resp = re.search("\['routes'\]\[(\d+)\]\['(.*)'\]", diff)
+
+                        route_elem = int(resp.group(1))
+
+                        if route_elem not in elem_changed['routes']:
+                            elem_changed['routes'].append(route_elem)
+
+                            try:
+
+                                device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+        
+                                    f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
+        
+                                    f"{previous_state['devices'][device_elem][category][route_elem]['next_hop']}")
+
+                                device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+
+                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+        
+                                    f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
+        
+                                    f"{current_state['devices'][device_elem][category][route_elem]['next_hop']}")
+                            except KeyError:
+                                # different return for next hop for XR
+                                device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+
+                                    f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
+
+                                    f"{previous_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+
+                                device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+
+                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+
+                                    f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
+
+                                    f"{current_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+
 
         return device_diffs
 
@@ -696,7 +764,7 @@ class dyagram:
             return None
 
 
-        elif os in ["nx_os", "ios_xe"]:
+        elif netmiko_session.device_type in ["cisco_nxos", "cisco_xe", "cisco_ios"]:
             output = netmiko_session.send_command("sh interface | inc bia ")
             re_resp = re.findall(
                 '(?<=bia\s)[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]\.[a-f\d][a-f\d][a-f\d][a-f\d]',
@@ -709,7 +777,7 @@ class dyagram:
             [chassis_ids.append(i) for i in re_resp if i not in chassis_ids]
             return chassis_ids
 
-        elif os == "ios_xr":
+        elif netmiko_session.device_type == "cisco_xr":
             output = netmiko_session.send_command("show lldp")
             return [re.search("(?<=Chassis ID:\s).*", output).group(0)]
 
@@ -776,7 +844,9 @@ class dyagram:
 
 
     def _get_lldp_neighbors_ssh_textfsm(self, netmiko_session):
-        os = self._get_os_version(netmiko_session)
+        #os = self._get_os_version(netmiko_session)
+        os = netmiko_session.device_type
+
         lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det", use_textfsm=True)
         if type(lldp_neighbors_output) == str:
             return lldp_neighbors_output
@@ -799,12 +869,12 @@ class dyagram:
 
     def _get_lldp_neighbors_ssh_regex(self, netmiko_session):
 
-        os = self._get_os_version(netmiko_session)
-        netmiko_session.host = os
+        # os = self._get_os_version(netmiko_session)
+        os = netmiko_session.device_type
 
         lldp_neighbors_output = netmiko_session.send_command("show lldp neighbors det")
         cdp_info_json = {"hostname": self._get_hostname(netmiko_session),
-                         "chassis_ids": self._get_chassis_ids(netmiko_session, os),
+                         "chassis_ids": self._get_chassis_ids(netmiko_session),
                          "neighbors": []}
 
         regex_strs = self._get_lldp_neighbor_regex_strings(os)
@@ -922,31 +992,31 @@ class dyagram:
 
         sh_version_output = netmiko_session.send_command("show version")
         if "IOS-XE" in sh_version_output:
-            return "ios_xe"
+            return "cisco_xe"
         elif "NX-OS" in sh_version_output:
-            return "nx_os"
+            return "cisco_nxos"
         elif "IOS XR" in sh_version_output:
-            return "ios_xr"
+            return "cisco_xr"
 
         return None
 
 
     def _get_lldp_neighbor_regex_strings(self, os):
 
-        regex = {"ios_xe":
+        regex = {"cisco_xe":
                      {"system_name": r"(?<=System Name:\s).*",
                       "local_interface": r"(?<=Local Intf:\s).*",
                       "neighbor_interface": r"(?<=Port id:\s).*",
                       "chassis_id": r"(?<=^Chassis id:\s).*"},
 
-                 "nx_os":
+                 "cisco_nxos":
                      {"system_name": r"(?<=System Name:\s).*",
                       "local_interface": r"(?<=Local Port id:\s).*",
                       "neighbor_interface": r"(?<=^Port id:\s).*",
                       "chassis_id": r"(?<=^Chassis id:\s).*"
 
                       },
-                 "ios_xr":
+                 "cisco_xr":
                      {"system_name": r"(?<=System Name:\s).*",
                       "local_interface": r"(?<=Local Interface:\s).*",
                       "neighbor_interface": r"(?<=^Port id:\s).*",

@@ -30,12 +30,10 @@ warnings.simplefilter("ignore")
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-logging.basicConfig(format=' %(message)s')
+logging.basicConfig(format='%(asctime)s : %(message)s', filename='dyagram.log', filemode='a')
 
 
-
-
-class dyagram:
+class Dyagram:
 
     def __init__(self, inventory_file=None, verbose=False):
 
@@ -123,7 +121,7 @@ class dyagram:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - START")
             resp = self._discover_lldp_neighbors_by_restconf(device)
             if not resp:
-                raise
+                raise Exception("Unable to get LLDP Neighbors via RESTCONF")
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering LLDP Neighbors - SUCCESSFUL")
         except SSHException:
@@ -164,11 +162,11 @@ class dyagram:
                     self.log.info(f"Pulled device {device} from Queue")
                     self.topology['devices'].append({'hostname': "", 'inventory_ip': device, 'layer2': {}, 'routes': [], 'dynamic_routing_neighbors': {}})
 
-                    future_lldp = executor.submit(self.__discover_lldp_neighbors, device)
+                    executor.submit(self.__discover_lldp_neighbors, device)
                     self.log.info(f"DEVICE: {device} - Submitted for discover_lldp_neighbors")
-                    future_routes = executor.submit(self.discover_routes, device)
+                    executor.submit(self.discover_routes, device)
                     self.log.info(f"DEVICE: {device} - Submitted for discover_routes")
-                    future_routing_neighbors = executor.submit(self.discover_dynamic_routing_neighbors, device)
+                    executor.submit(self.discover_dynamic_routing_neighbors, device)
                     self.log.info(f"DEVICE: {device} - Submitted for discover_dynamic_routing_neighbors")
 
                     self._devices_queried.append(device)
@@ -184,7 +182,8 @@ class dyagram:
 
             #sort topology by hostname to compare to previous
 
-            self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
+            #self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
+            self.sort_topology() # sort topology to easily compare
 
             if not self.state_exists:
                 self.export_state()
@@ -201,6 +200,7 @@ class dyagram:
                 except Exception:
                     tb = self.get_traceback()
                     self.log.info(f"EXCEPTION THROWN GETTING DIFFS: {tb}")
+
                 # print to screen the diffs
                 print("DIFFS\n")
                 for ip in diffs:
@@ -250,6 +250,18 @@ class dyagram:
             self.changes_in_state = True
         file.close()
 
+    def sort_topology(self):
+        self.topology['devices'] = sorted(self.topology['devices'], key=lambda e: e['hostname'])
+        for d in self.topology['devices']:
+            for protocol in d['dynamic_routing_neighbors']:
+                d['dynamic_routing_neighbors'][protocol] = sorted(d['dynamic_routing_neighbors'][protocol])
+
+            d['routes'] = sorted(d['routes'], key=lambda e: e['network'])
+            d['layer2']['chassis_ids'] = sorted(d['layer2']['chassis_ids'])
+            d['layer2']['neighbors'] = sorted(d['layer2']['neighbors'], key=lambda e: e['chassis_id'])
+
+
+
 
     def discover_routes(self, device):
 
@@ -257,7 +269,7 @@ class dyagram:
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - START")
             routes = self.discover_routes_restconf(device)
             if not routes:
-                raise
+                raise Exception("Enable to connect via Restconf")
             self.pbar.update(self.pbar_update_int)
             self.log.info(f"DEVICE: {device} - RESTCONF : Discovering routes - SUCCESSFUL")
         except SSHException:
@@ -335,9 +347,23 @@ class dyagram:
             # if not CONN_SET:
             #     dev = ConnectHandler(**netmiko_args)
             self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : discover_routes_ssh")
-            dev = ConnectHandler(**netmiko_args)
+            tries = 0
+            while tries < 10: #FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+                try:
+                    dev = ConnectHandler(**netmiko_args)
+                    dev.enable()
+                    tries = 10  # break
+                except:
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh")
+                    time.sleep(1)
+                    tries += 1
+                    if tries == 10:
+                        self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
+
+
             self.log.info(f"DEVICE: {device} - SSH : CREATED NETMIKO OBJ : discover_routes_ssh")
-            dev.enable()
+
 
             routes_w_vrf = dev.send_command("show ip route vrf all", use_textfsm=True)
             routes_wo_vrf = dev.send_command("show ip route", use_textfsm=True)
@@ -369,7 +395,7 @@ class dyagram:
                            # this is due to deeper dictionary items
 
         diff_resp = DeepDiff(previous_state, current_state, ignore_order=True)
-
+        print(diff_resp)
         if not diff_resp:
             return None
 
@@ -511,6 +537,9 @@ class dyagram:
                         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN GET_DEVICE_TYPE: {tb}")
                         raise Exception("Unable to access device")
                     autodetect_tries += 1
+                    if autodetect_tries == 10:
+                        self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
+
                     time.sleep(5)
         except:
             tb = self.get_traceback()
@@ -594,10 +623,23 @@ class dyagram:
                 self.log.info("GOT DEVICE TYPE IN EIGRP NEIGHBORS SSH")
 
             self.log.info("CREATING NETMIKO OBJ : discover_eigrp_neighbors_ssh")
-            dev = ConnectHandler(**nm_args)
-            self.log.info("CREATED NETMIKO OBJ : discover_eigrp_neighbors_ssh")
 
-            dev.enable()
+
+            tries = 0
+            while tries < 10:  # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+                try:
+                    dev = ConnectHandler(**nm_args)
+                    dev.enable()
+                    tries = 10  # break
+                except:
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh")
+                    time.sleep(1)
+                    tries += 1
+                    if tries == 10:
+                        self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
+
+            self.log.info(f"DEVICE: {device} CREATED NETMIKO OBJ : discover_eigrp_neighbors_ssh")
 
 
             if os in ['cisco_ios', 'cisco_nxos']:
@@ -705,7 +747,21 @@ class dyagram:
                 # netmiko_args['device_type'] = os
 
             self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : _discover_lldp_neighbors_by_ssh")
-            dev = ConnectHandler(**netmiko_args)
+
+            tries = 0
+            while tries < 10: # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+                try:
+                    dev = ConnectHandler(**netmiko_args)
+                    tries = 10 # break
+                except:
+                    self.log.info(f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: _discover_lldp_neighbors_by_ssh")
+                    time.sleep(1)
+                    tries += 1
+                    if tries == 10:
+                        self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
+
+
+
             self.log.info(f"DEVICE: {device} - SSH : CREATED NETMIKO OBJ : _discover_lldp_neighbors_by_ssh")
             self.log.info(f"DEVICE: {device} - SSH : SETTING ENABLE")
 
@@ -943,52 +999,60 @@ class dyagram:
         return cdp_info_json
 
     def _get_hostname(self, netmiko_session=None, restconf_session=None):
+        got_hostname = False
+        tries = 0
+        while not got_hostname and tries < 10:
+            try:
+                if not netmiko_session and restconf_session:
+                    try:
+                        device = re.search('\d+\.\d+\.\d+\.\d+', restconf_session.base_url).group(1)
+                    except:
+                        device = restconf_session.base_url
 
-        try:
-            if not netmiko_session and restconf_session:
-                try:
-                    device = re.search('\d+\.\d+\.\d+\.\d+', restconf_session.base_url).group(1)
-                except:
-                    device = restconf_session.base_url
-
-                try:
-                    self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying for hostname - START")
-                    resp = restconf_session.get(f"{device}/openconfig-system:system/config/name")
-                    if resp.status_code == 200:
-                        self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
-                        return resp.json()['hostname']
-                    if resp.status_code != 200:
-                        self.log.info(
-                            f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
-                        # try nexus TEMPORARY
-                        self.log.info(
-                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
-                        resp = restconf_session.get(f"{device}/Cisco-NX-OS-device:System/name")
-
+                    try:
+                        self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying for hostname - START")
+                        resp = restconf_session.get(f"{device}/openconfig-system:system/config/name")
                         if resp.status_code == 200:
+                            self.log.info(f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - SUCCESSFUL")
+                            return resp.json()['hostname']
+                        if resp.status_code != 200:
                             self.log.info(
-                                f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
-                            return resp.json()['name']
+                                f"DEVICE: {device} - RESTCONF_OPENCONFIG : Querying hostname - FAILURE")
+                            # try nexus TEMPORARY
+                            self.log.info(
+                                f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - START")
+                            resp = restconf_session.get(f"{device}/Cisco-NX-OS-device:System/name")
+
+                            if resp.status_code == 200:
+                                self.log.info(
+                                    f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - SUCCESSFUL")
+                                return resp.json()['name']
+                            self.log.info(
+                                f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
+
+                    except:
+
+                        tb = self.get_traceback()
                         self.log.info(
-                            f"DEVICE: {device} - RESTCONF_NXOS_OS_DEVICE_YANG : Querying hostname - FAILURE")
+                            f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
 
-                except:
+                else:
+                    self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - START")
+                    sh_run_output = netmiko_session.send_command("sh run | inc hostname")
+                    hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
+                    self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - SUCCESSFUL")
+                    return hostname
+                return None
 
-                    tb = self.get_traceback()
+            except:
+                tries += 1
+                tb = self.get_traceback()
+                self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN _get_hostname, TRY AGAIN : {tb}")
+                if tries == 10:
                     self.log.info(
-                        f"DEVICE: {device} - RESTCONF_OPENCONFIG_AND_NXOS_OS_DEVICE_YANG_CATCHALL : Querying hostname - FAILURE - TB: {tb}")
+                        f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.")  # CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
-            else:
-                self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - START")
-                sh_run_output = netmiko_session.send_command("sh run | inc hostname")
-                hostname = re.search("hostname\s+(.*)", sh_run_output).group(1)
-                self.log.info(f"DEVICE: {netmiko_session.host} - SSH : Querying for hostname - SUCCESSFUL")
-
-                return hostname
-            return None
-        except:
-            tb = self.get_traceback()
-            self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN _get_hostname : {tb}")
+                time.sleep(1)
 
 
     def _get_os_version(self, netmiko_session):
@@ -1048,7 +1112,7 @@ def main():
             dyinit.dy_init()
 
         if args.dyagram_args[0].lower() == "discover":
-            dy = dyagram(verbose=args.verbose)
+            dy = Dyagram(verbose=args.verbose)
             dy.discover()
 
         if args.dyagram_args[0].lower() == "export":
@@ -1073,7 +1137,7 @@ def main():
                     except:
                         print(f"Site {args.dyagram_args[2]} doesn't exist")
     except:
-        tb = dyagram.get_traceback()
+        tb = Dyagram.get_traceback()
         print(f"DEVICE: MAIN EXCEPTION : {tb}")
 
 

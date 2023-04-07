@@ -31,3 +31,5 @@ def check_for_no_changes_in_state():
             test_number += 1
 
 
+if __name__ == "__main__":
+    check_for_no_changes_in_state()

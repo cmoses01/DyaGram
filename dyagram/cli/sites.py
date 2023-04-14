@@ -9,7 +9,7 @@ class sites:
 
 
     def get_sites(self):
-        return next(os.walk(''))[1]
+        return [folder.name for folder in os.scandir() if folder.is_dir() and folder.name not in ['.info']]
 
     def make_new_site(self, name):
         if name in self.sites:
@@ -35,8 +35,7 @@ class sites:
 
         current_site = self.get_current_site()
         sites = self.get_sites()
-        if ".info" in sites:
-            sites.remove(".info")
+
         for site in sites:
 
             if site == current_site:

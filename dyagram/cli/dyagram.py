@@ -2,6 +2,7 @@ import json
 import queue
 import re
 import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -21,16 +22,18 @@ import warnings
 from colorama import Fore
 from deepdiff import DeepDiff
 
-from dyagram.cli import sites
-from dyagram.cli import export
+from dyagram.cli.sites import sites
+from dyagram.cli.export import DiagramExport
+from dyagram.cli.initialize import dyagramInitialize
 
 warnings.simplefilter("ignore")
 
 
-
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
-
-logging.basicConfig(format='%(asctime)s : %(message)s', filename='dyagram.log', filemode='a')
+file_handler = logging.FileHandler('dyagram.log')
+stdout_handler = logging.StreamHandler(stream=sys.stdout)
+handlers = [file_handler, stdout_handler]
+logging.basicConfig(format='%(asctime)s : %(message)s', handlers=handlers)
 
 
 class Dyagram:
@@ -70,16 +73,16 @@ class Dyagram:
 
                                       "banner_timeout": 200}
 
-
+        self.devices_unable_to_connect = []
 
     def setup_logging(self):
         log = logging.getLogger("")
         self.log = log
+
         if self.verbose:
-            self.log.setLevel(logging.INFO)
+            self.log.setLevel(logging.DEBUG)
         else:
             self.log.setLevel(logging.CRITICAL)
-
 
 
     def get_current_site(self):
@@ -180,6 +183,12 @@ class Dyagram:
 
             executor.shutdown(wait=True)
 
+            if self.devices_unable_to_connect:
+                self.pbar.close()
+                for device in self.devices_unable_to_connect:
+                    print(f"Unable to connect to device: {device}. Please, resolve and then re-run Dyagram.")
+                sys.exit()
+
             #sort topology by hostname to compare to previous
 
             #self.topology['devices'] = sorted(self.topology['devices'], key=lambda d: d['hostname'])
@@ -196,7 +205,7 @@ class Dyagram:
                 file = open(rf"{self.site}/state.json", 'r')
                 state = json.load(file)
                 try:
-                    diffs = self.get_state_diff(state, self.topology) # state is the state file on record and topology is current state
+                    diffs = self.get_state_diff(state, self.topology, log=self.log) # state is the state file on record and topology is current state
                 except Exception:
                     tb = self.get_traceback()
                     self.log.info(f"EXCEPTION THROWN GETTING DIFFS: {tb}")
@@ -305,60 +314,24 @@ class Dyagram:
                             "secret": self.password,
                             "banner_timeout": 200
                             }
-            # autodetect_tries = 0
-            # while autodetect_tries < 10:
-            #     try:
-            #         guesser = SSHDetect(**autodetect_netmiko_args)
-            #         best_match = guesser.autodetect()
-            #         netmiko_args['device_type'] = best_match
-            #
-            #         dev = ConnectHandler(**netmiko_args)
-            #         dev.enable()
-            #
-            #
-            #
-            #     except NetmikoAuthenticationException:
-            #         # print(f"AUTHENTICATION ERROR FOR DEVICE: {device}")
-            #         return False
-            #     except:
-            #         autodetect_tries += 1
-            #         time.sleep(5)
-            #         tb = self.get_traceback()
-            #         self.log.info(f"DEVICE: {device} EXCEPTION02 THROWN IN discover_routes_ssh: {tb}")
 
-                # raise Exception("Unable to determine OS or OS Not Supported.")
-            #     try:
-            #         if not netmiko_args['device_type']:
-            #             # Later put in unable to find OS
-            #             netmiko_args['device_type'] = "cisco_ios"
-            #         dev = ConnectHandler(**netmiko_args)
-            #         dev.enable()
-            #         CONN_SET = True
-            #     except Exception:
-            #         tb = self.get_traceback()
-            #         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
-            #
-            #         # print(tb)
-            #
-            #
-            # os = self._get_os_version(dev)
-            # netmiko_args['device_type'] = os
-
-            # if not CONN_SET:
-            #     dev = ConnectHandler(**netmiko_args)
             self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : discover_routes_ssh")
             tries = 0
-            while tries < 10: #FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+            while tries < 5: #FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
                 try:
                     dev = ConnectHandler(**netmiko_args)
                     dev.enable()
-                    tries = 10  # break
+                    tries = 5  # break
                 except:
                     self.log.info(
                         f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh")
+                    tb = self.get_traceback()
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ - TB: {tb}")
                     time.sleep(1)
                     tries += 1
-                    if tries == 10:
+                    if tries == 5:
+                        self.devices_unable_to_connect.append(device)
                         self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
 
@@ -367,6 +340,8 @@ class Dyagram:
 
             routes_w_vrf = dev.send_command("show ip route vrf all", use_textfsm=True)
             routes_wo_vrf = dev.send_command("show ip route", use_textfsm=True)
+            self.log.info(f"{device} - routes_W_vrf: {routes_w_vrf}")
+            self.log.info(f"{device} - routes_W)_vrf: {routes_wo_vrf}")
             for route in routes_w_vrf:
                 if 'uptime' in route.keys():
                     route.pop('uptime')
@@ -386,127 +361,130 @@ class Dyagram:
             self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN discover_routes_ssh: {tb}")
 
     @staticmethod
-    def get_state_diff(previous_state, current_state):
+    def get_state_diff(previous_state, current_state, log=None):
+        try:
+            log.info(f"STARTING GET_STATE_DIFF")
+            device_diffs = {}
 
-        device_diffs = {}
+            elem_changed = {
+                "routes": []}  # this keeps up with "changes" when converting to removed/add for routes,
+                               # this is due to deeper dictionary items
+            diff_resp = DeepDiff(previous_state, current_state, ignore_order=True)
 
-        elem_changed = {
-            "routes": []}  # this keeps up with "changes" when converting to removed/add for routes,
-                           # this is due to deeper dictionary items
+            if not diff_resp:
+                return None
 
-        diff_resp = DeepDiff(previous_state, current_state, ignore_order=True)
-        print(diff_resp)
-        if not diff_resp:
-            return None
+            diff_type = None
+            for k in diff_resp.keys():
+                if "added" in k:
+                    diff_type = "added"
+                    s = current_state
+                elif "removed" in k:
+                    diff_type = "removed"
+                    s = previous_state
+                elif "changed" in k:
+                    s = current_state
+                    diff_type = "changed"
 
-        diff_type = None
-        for k in diff_resp.keys():
-            if "added" in k:
-                diff_type = "added"
-                s = current_state
-            elif "removed" in k:
-                diff_type = "removed"
-                s = previous_state
-            elif "changed" in k:
-                s = current_state
-                diff_type = "changed"
+                for diff in diff_resp[k]:
 
-            for diff in diff_resp[k]:
-
-                resp = re.search("root\['devices'\]\[(\d+)\]\[([^\]]*)\]", diff)
-                device_elem = int(resp.group(1))
-                category = resp.group(2).replace("'", "").replace('"', '')
-                if s['devices'][device_elem]['inventory_ip'] not in device_diffs.keys():
-                    device_diffs[s['devices'][device_elem]['inventory_ip']] = {"added": [], "removed": [],
-                                                                               "changed": []}
+                    resp = re.search("root\['devices'\]\[(\d+)\]\[([^\]]*)\]", diff)
+                    device_elem = int(resp.group(1))
+                    category = resp.group(2).replace("'", "").replace('"', '')
+                    if s['devices'][device_elem]['inventory_ip'] not in device_diffs.keys():
+                        device_diffs[s['devices'][device_elem]['inventory_ip']] = {"added": [], "removed": [],
+                                                                                   "changed": []}
 
 
-                if category == "dynamic_routing_neighbors":
-                    if 'eigrp' in diff:
-                        routing_protocol = "EIGRP"
-                    elif 'ospf' in diff:
-                        routing_protocol = "OSPF"
-                    elif 'bgp' in diff:
-                        routing_protocol = "BGP"
+                    if category == "dynamic_routing_neighbors":
+                        if 'eigrp' in diff:
+                            routing_protocol = "EIGRP"
+                        elif 'ospf' in diff:
+                            routing_protocol = "OSPF"
+                        elif 'bgp' in diff:
+                            routing_protocol = "BGP"
 
-                    if diff_type != "changed":
-                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
-                            f"{routing_protocol} Neighbor {diff_resp[k][diff]}")
-                    else:
-                        device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
-                            f"{routing_protocol} Neighbor {diff_resp[k][diff]['old_value']}")
-                        device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
-                            f"{routing_protocol} Neighbor {diff_resp[k][diff]['new_value']}")
-
-                elif category == "layer2":
-                    if diff_type != "changed":
-                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
-                            f"LLDP Neighbor {diff_resp[k][diff]['hostname']} (Chassis ID: {diff_resp[k][diff]['chassis_id']})")
-
-                    else:
-                        resp = re.search("\['neighbors'\]\[(\d+)\]\['(.*)'\]", diff)
-                        neigh_elem = int(resp.group(1))
-                        neigh_property = resp.group(2)
-                        device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
-                            f"LLDP Neighbor {s['devices'][device_elem][category]['neighbors'][neigh_elem]['hostname']}: {neigh_property}: "
-                            f"NEW VALUE: {diff_resp[k][diff]['new_value']}, OLD VALUE: {diff_resp[k][diff]['old_value']}")
-                elif category == "routes":
-
-                    if diff_type != "changed":
-
-                        try:
+                        if diff_type != "changed":
                             device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                                f"{routing_protocol} Neighbor {diff_resp[k][diff]}")
+                        else:
+                            device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                                f"{routing_protocol} Neighbor {diff_resp[k][diff]['old_value']}")
+                            device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+                                f"{routing_protocol} Neighbor {diff_resp[k][diff]['new_value']}")
 
-                                f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['next_hop']}")
-                        except KeyError:
-                            # different return for next hop for XR
+                    elif category == "layer2":
+                        if diff_type != "changed":
                             device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                                f"LLDP Neighbor {diff_resp[k][diff]['hostname']} (Chassis ID: {diff_resp[k][diff]['chassis_id']})")
 
-                                f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['nexthop_ip']}")
-                    else:
+                        else:
+                            resp = re.search("\['neighbors'\]\[(\d+)\]\['(.*)'\]", diff)
+                            neigh_elem = int(resp.group(1))
+                            neigh_property = resp.group(2)
+                            device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
+                                f"LLDP Neighbor {s['devices'][device_elem][category]['neighbors'][neigh_elem]['hostname']}: {neigh_property}: "
+                                f"NEW VALUE: {diff_resp[k][diff]['new_value']}, OLD VALUE: {diff_resp[k][diff]['old_value']}")
+                    elif category == "routes":
 
-                        resp = re.search("\['routes'\]\[(\d+)\]\['(.*)'\]", diff)
-
-                        route_elem = int(resp.group(1))
-
-                        if route_elem not in elem_changed['routes']:
-                            elem_changed['routes'].append(route_elem)
+                        if diff_type != "changed":
 
                             try:
+                                device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
 
-                                device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
-                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
-        
-                                    f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
-        
-                                    f"{previous_state['devices'][device_elem][category][route_elem]['next_hop']}")
-
-                                device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
-
-                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
-        
-                                    f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
-        
-                                    f"{current_state['devices'][device_elem][category][route_elem]['next_hop']}")
+                                    f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['next_hop']}")
                             except KeyError:
                                 # different return for next hop for XR
-                                device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
-                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+                                device_diffs[s['devices'][device_elem]['inventory_ip']][diff_type].append(
 
-                                    f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
+                                    f"Route {diff_resp[k][diff]['network']}/{diff_resp[k][diff]['mask']} {diff_resp[k][diff]['nexthop_ip']}")
+                        else:
 
-                                    f"{previous_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+                            resp = re.search("\['routes'\]\[(\d+)\]\['(.*)'\]", diff)
 
-                                device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+                            route_elem = int(resp.group(1))
 
-                                    f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+                            if route_elem not in elem_changed['routes']:
+                                elem_changed['routes'].append(route_elem)
 
-                                    f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
+                                try:
 
-                                    f"{current_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+                                    device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                                        f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+            
+                                        f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
+            
+                                        f"{previous_state['devices'][device_elem][category][route_elem]['next_hop']}")
 
+                                    device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
 
-        return device_diffs
+                                        f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+            
+                                        f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
+            
+                                        f"{current_state['devices'][device_elem][category][route_elem]['next_hop']}")
+                                except KeyError:
+                                    # different return for next hop for XR
+                                    device_diffs[s['devices'][device_elem]['inventory_ip']]["removed"].append(
+                                        f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+    
+                                        f"{previous_state['devices'][device_elem][category][route_elem]['mask']} "
+    
+                                        f"{previous_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+
+                                    device_diffs[s['devices'][device_elem]['inventory_ip']]["added"].append(
+
+                                        f"Route {s['devices'][device_elem][category][route_elem]['network']}/"
+    
+                                        f"{current_state['devices'][device_elem][category][route_elem]['mask']} "
+    
+                                        f"{current_state['devices'][device_elem][category][route_elem]['nexthop_ip']}")
+
+            log.info(f"END OF GET_STATE_DIFF")
+            return device_diffs
+        except Exception as e:
+
+            raise e
 
     def get_device_type(self, device):
 
@@ -515,15 +493,20 @@ class Dyagram:
             autodetect_netmiko_args = {"device_type": "autodetect",
                                        "host": device,
                                        "username": self.username,
-                                       "password": self.password,
-                                       "banner_timeout": 30}
+                                       "password": self.password
+                                       }
             autodetect_tries = 0
-            while autodetect_tries < 10:
+            autodetect_returned_none = False
+            while autodetect_tries < 5:
                 try:
                     guesser = SSHDetect(**autodetect_netmiko_args)
                     best_match = guesser.autodetect()
+                    self.log.info(f"DEVICE: {device} BEST MATCH {best_match}")
 
 
+                    if best_match == None:
+                        autodetect_returned_none = True
+                        raise Exception("Unable to autodetect OS. Trying again..")
                     return best_match
 
 
@@ -532,12 +515,15 @@ class Dyagram:
                     return None
 
                 except:
-                    if autodetect_tries > 10:
+                    if autodetect_tries > 5 and autodetect_returned_none:
+                        raise Exception("Unable to autodetect OS. Tries exhausted.")
+                    elif autodetect_tries > 5:
                         tb = self.get_traceback()
                         self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN GET_DEVICE_TYPE: {tb}")
                         raise Exception("Unable to access device")
                     autodetect_tries += 1
-                    if autodetect_tries == 10:
+                    if autodetect_tries == 5:
+                        self.devices_unable_to_connect.append(device)
                         self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
                     time.sleep(5)
@@ -626,17 +612,22 @@ class Dyagram:
 
 
             tries = 0
-            while tries < 10:  # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+            while tries < 5:  # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
                 try:
                     dev = ConnectHandler(**nm_args)
                     dev.enable()
-                    tries = 10  # break
+                    tries = 5  # break
                 except:
+                    tb = self.get_traceback()
                     self.log.info(
                         f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh")
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh : TB = {tb}")
+
                     time.sleep(1)
                     tries += 1
-                    if tries == 10:
+                    if tries == 5:
+                        self.devices_unable_to_connect.append(device)
                         self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
             self.log.info(f"DEVICE: {device} CREATED NETMIKO OBJ : discover_eigrp_neighbors_ssh")
@@ -647,16 +638,19 @@ class Dyagram:
             elif os in ['cisco_xr']:
                 eigrp_output = dev.send_command(
                     "show eigrp neighbors")  # textfsm not currently supported for this command
-                if isinstance(eigrp_output, str):
-                    neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
-                    self.log.info(f"{device}: EIGRP NEIGHBOR IPs - {neighbor_ips}")
-                for i in self.topology['devices']:
-                    if i['inventory_ip'] == device:
-                        i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
-                        break
             else:
+
                 dev.disconnect()
                 raise Exception(f"OS {os} Not supported")
+
+            self.log.info(f"{device} - EIGRP_OUTPUT: {eigrp_output}")
+            if isinstance(eigrp_output, str):
+                neighbor_ips = re.findall('\d+\.\d+\.\d+\.\d+', eigrp_output)
+                self.log.info(f"{device}: EIGRP NEIGHBOR IPs - {neighbor_ips}")
+            for i in self.topology['devices']:
+                if i['inventory_ip'] == device:
+                    i['dynamic_routing_neighbors']['eigrp'] = neighbor_ips
+                    break
             dev.disconnect()
         except:
             self.log.info("HIT EXCEPT discover_eigrp_neighbors_ssh")
@@ -730,34 +724,24 @@ class Dyagram:
                             "secret": self.password,
                             }
 
-
-                # try:
-                #     if not netmiko_args['device_type']:
-                #         # Later put in unable to find OS
-                #         netmiko_args['device_type'] = "cisco_ios"
-                #     dev = ConnectHandler(**netmiko_args)
-                #     dev.enable()
-                # except Exception:
-                #     tb = self.get_traceback()
-                #     self.log.info(f"DEVICE: {device} - SSH : ERROR DISCOVER LLDP NEIGHBORS - {tb}")
-
-
-                # CONN_SET = True
-                # os = self._get_os_version(dev)
-                # netmiko_args['device_type'] = os
-
             self.log.info(f"DEVICE: {device} - SSH : CREATING NETMIKO OBJ : _discover_lldp_neighbors_by_ssh")
 
             tries = 0
-            while tries < 10: # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
+            while tries < 5: # FIXME: THIS SHOULD TRY 10 TIMES THEN RETURN UNABLE TO RUN DYAGRAM
                 try:
                     dev = ConnectHandler(**netmiko_args)
-                    tries = 10 # break
+                    tries = 5 # break
                 except:
-                    self.log.info(f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: _discover_lldp_neighbors_by_ssh")
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: _discover_lldp_neighbors_by_ssh")
+                    tb = self.get_traceback()
+                    self.log.info(
+                        f"DEVICE: {device} - SSH : FAILED TO CREATE NETMIKO OBJ, TRY AGAIN: discover_routes_ssh : TB = {tb}")
+
                     time.sleep(1)
                     tries += 1
-                    if tries == 10:
+                    if tries == 5:
+                        self.devices_unable_to_connect.append(device)
                         self.log.info(f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.") #  CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
 
@@ -770,7 +754,7 @@ class Dyagram:
 
             try:
                 lldp_nei_json = self._get_lldp_neighbors_ssh_textfsm(dev)
-
+                self.log.info(f"{device} - lldp_nei_json: {lldp_nei_json}")
                 if type(lldp_nei_json) == str:
                     raise ValueError("LLDP NEIGHBORS ARE STRs. Try without textfsm")
             except ValueError as e:
@@ -1001,7 +985,7 @@ class Dyagram:
     def _get_hostname(self, netmiko_session=None, restconf_session=None):
         got_hostname = False
         tries = 0
-        while not got_hostname and tries < 10:
+        while not got_hostname and tries < 5:
             try:
                 if not netmiko_session and restconf_session:
                     try:
@@ -1048,7 +1032,8 @@ class Dyagram:
                 tries += 1
                 tb = self.get_traceback()
                 self.log.info(f"DEVICE: {device} EXCEPTION THROWN IN _get_hostname, TRY AGAIN : {tb}")
-                if tries == 10:
+                if tries == 5:
+                    self.devices_unable_to_connect.append(device)
                     self.log.info(
                         f"DEVICE: {device} Unable to connect. Please, resolve and re-run Dyagram Discover.")  # CREATE FUNCTION THAT STOPS PROGRAM AND PRINTS SCREEN
 
@@ -1107,8 +1092,8 @@ def main():
         args = parser.parse_args()
 
         if args.dyagram_args[0].lower() == "init":
-            from dyagram.cli import initialize
-            dyinit = initialize.dyagramInitialize()
+
+            dyinit = dyagramInitialize()
             dyinit.dy_init()
 
         if args.dyagram_args[0].lower() == "discover":
@@ -1116,7 +1101,7 @@ def main():
             dy.discover()
 
         if args.dyagram_args[0].lower() == "export":
-            dy = export.DiagramExport()
+            dy = DiagramExport()
             dy.export()
 
 
